@@ -1,8 +1,9 @@
-app = "lgchatbotsr"  # Уникальное имя приложения
-primary_region = "ams"  # Выберите регион (ams = Амстердам)
+app = "lgchatbotsr"
+primary_region = "ams"
 
 [build]
-  dockerfile = "Dockerfile"
+  builder = "paketobuildpacks/builder:base"
+  buildpacks = ["gcr.io/paketo-buildpacks/python"]
 
 [env]
   PORT = "8080"
@@ -10,7 +11,7 @@ primary_region = "ams"  # Выберите регион (ams = Амстерда�
   ADMIN_PASSWORD = "LegerisKEY-738197481275618273858173"
 
 [vm]
-  memory = "512mb"  # Увеличиваем RAM для aiogram
+  memory = "512mb"
 
 [[services]]
   internal_port = 8080
