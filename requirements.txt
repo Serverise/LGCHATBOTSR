@@ -1,4 +1,4 @@
 flask==2.3.3
-aiogram==2.25.1
+aiogram==3.3.0
 werkzeug==3.0.1
 gunicorn==21.2.0
