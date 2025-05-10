@@ -7,6 +7,7 @@ import os
 import threading
 
 from aiogram import Bot, Dispatcher, types
+from aiogram.filters import CommandStart, Command, Text
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.types import ReplyKeyboardMarkup, InlineKeyboardMarkup, InlineKeyboardButton
@@ -97,7 +98,7 @@ async def send_message_safe(chat_id: int, text: str) -> bool:
         return False
 
 # Команда /start
-@dp.message(commands=['start'])
+@dp.message(CommandStart())
 async def start_command(message: types.Message):
     user_id = message.from_user.id
     username = message.from_user.username
@@ -145,7 +146,7 @@ async def start_command(message: types.Message):
         )
 
 # Обработка кнопки "Подписаться на канал"
-@dp.message(lambda message: message.text == "Подписаться на канал")
+@dp.message(Text(equals="Подписаться на канал"))
 async def subscribe_channel(message: types.Message):
     user_id = message.from_user.id
     if await check_subscription(user_id):
@@ -168,7 +169,7 @@ async def subscribe_channel(message: types.Message):
         )
 
 # Панель управления для админов
-@dp.message(lambda message: message.text == "Панель управления")
+@dp.message(Text(equals="Панель управления"))
 async def admin_panel(message: types.Message):
     user_id = message.from_user.id
     cursor.execute('SELECT is_admin FROM users WHERE user_id = ?', (user_id,))
