@@ -4,7 +4,6 @@ import sqlite3
 from datetime import datetime, timedelta
 from flask import Flask, render_template, request, redirect, url_for, flash, session
 import os
-import threading
 
 from aiogram import Bot, Dispatcher, types
 from aiogram.fsm.storage.memory import MemoryStorage
@@ -24,7 +23,7 @@ app.config['PERMANENT_SESSION_LIFETIME'] = 3600
 API_TOKEN = '7731278147:AAGNBi8Td-kSWr0Hhxdh0r46fXKzVsI0S2w'
 CHANNEL_ID = '-1002587647993'
 CHANNEL_LINK = 'https://t.me/+KZeOjH5orpRiNjgy'
-bot = Bot(token=API_TOKEN, parse_mode=ParseMode.HTML)  # Убрали DefaultBotProperties
+bot = Bot(token=API_TOKEN, parse_mode=ParseMode.HTML)
 storage = MemoryStorage()
 dp = Dispatcher(bot=bot, storage=storage)
 
@@ -179,7 +178,7 @@ def check_admin_auth(admin_id):
     try:
         cursor.execute('SELECT is_admin FROM users WHERE user_id = ?', (admin_id,))
         result = cursor.fetchone()
-        return result and result[0]
+        return result and result[0] == 1
     except Exception as e:
         logger.error(f"Ошибка базы данных при проверке админа {admin_id}: {str(e)}")
         return False
@@ -193,13 +192,22 @@ def admin_panel():
         try:
             admin_id = int(admin_id)
             if password == ADMIN_PASSWORD:
+                # Проверка в базе данных
                 cursor.execute('SELECT is_admin FROM users WHERE user_id = ?', (admin_id,))
                 result = cursor.fetchone()
-                if result and result[0]:
+                if result and result[0] == 1:
                     session['admin_id'] = admin_id
                     log_admin_action(admin_id, "Вход", "Админ вошел в систему")
                     return redirect(url_for('admin_dashboard', admin_id=admin_id))
                 else:
+                    # Резервная проверка для ADMIN_ID
+                    if admin_id == ADMIN_ID:
+                        cursor.execute('INSERT OR REPLACE INTO users (user_id, is_admin) VALUES (?, ?)', (admin_id, 1))
+                        conn.commit()
+                        logger.info(f"Админ {admin_id} добавлен вручную при авторизации")
+                        session['admin_id'] = admin_id
+                        log_admin_action(admin_id, "Вход", "Админ вошел в систему (добавлен вручную)")
+                        return redirect(url_for('admin_dashboard', admin_id=admin_id))
                     flash('У вас нет прав администратора.')
             else:
                 flash('Неверный пароль.')
@@ -448,8 +456,8 @@ def logout():
     session.pop('admin_id', None)
     return redirect(url_for('admin_panel'))
 
-# Инициализация базы данных
-async def on_startup():
+# Инициализация базы данных (синхронная версия)
+def init_db():
     try:
         cursor.execute('SELECT COUNT(*) FROM channels')
         if cursor.fetchone()[0] == 0:
@@ -457,25 +465,32 @@ async def on_startup():
                           (-1002587647993, "Legeris Channel", "Добро пожаловать в наш канал! Спасибо за подписку."))
             conn.commit()
         
-        cursor.execute('INSERT OR IGNORE INTO users (user_id, is_admin) VALUES (?, ?)', (ADMIN_ID, 1))
-        conn.commit()
-        logger.info("База данных инициализирована")
+        cursor.execute('SELECT user_id FROM users WHERE user_id = ?', (ADMIN_ID,))
+        if not cursor.fetchone():
+            cursor.execute('INSERT INTO users (user_id, is_admin) VALUES (?, ?)', (ADMIN_ID, 1))
+            conn.commit()
+            logger.info(f"Админ {ADMIN_ID} успешно добавлен в базу данных")
+        else:
+            logger.info(f"Админ {ADMIN_ID} уже существует в базе данных")
     except Exception as e:
         logger.error(f"Ошибка инициализации базы данных: {str(e)}")
 
-# Запуск бота
-def start_bot():
-    loop = asyncio.new_event_loop()
-    asyncio.set_event_loop(loop)
+# Асинхронный запуск бота
+async def start_bot():
     try:
-        loop.run_until_complete(on_startup())
-        loop.run_until_complete(dp.start_polling(bot, skip_updates=True))
+        logger.info("Запуск бота...")
+        await dp.start_polling(bot, skip_updates=True)
     except Exception as e:
         logger.error(f"Ошибка при запуске бота: {str(e)}")
-    finally:
-        loop.close()
+
+# Инициализация приложения
+init_db()  # Вызываем синхронно перед запуском
 
 if __name__ == '__main__':
-    bot_thread = threading.Thread(target=start_bot, daemon=True)
-    bot_thread.start()
+    # Запускаем бота в основном потоке через asyncio.run
+    try:
+        asyncio.run(start_bot())
+    except Exception as e:
+        logger.error(f"Ошибка при запуске приложения: {str(e)}")
+    # Запускаем Flask
     app.run(host='0.0.0.0', port=int(os.getenv('PORT', 5000)))
