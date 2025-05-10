@@ -92,11 +92,11 @@ async def check_auth(request):
         admin_id = session.get('admin_id')
         if not admin_id:
             session.setdefault('flashed_messages', []).append('Требуется авторизация!')
-            raise web.HTTPFound('/')
+            return None
         return admin_id
     except Exception as e:
         logger.error(f"Ошибка проверки авторизации: {e}")
-        raise web.HTTPFound('/')
+        return None
 
 # Логирование действий админа
 def log_admin_action(admin_id, action, details):
@@ -146,33 +146,33 @@ async def login_handler(request):
             session['admin_id'] = admin_id
             session.setdefault('flashed_messages', []).append('Успешный вход!')
             log_admin_action(admin_id, 'login', 'Logged in')
-            raise web.HTTPFound(f'/admin/{admin_id}')
+            return web.HTTPFound(f'/admin/{admin_id}')
         else:
             session.setdefault('flashed_messages', []).append('Неверный ID или пароль!')
-            raise web.HTTPFound('/')
+            return web.HTTPFound('/')
     except Exception as e:
         logger.error(f"Ошибка обработки логина: {e}")
-        raise web.HTTPFound('/')
+        return web.HTTPFound('/')
 
 async def admin_dashboard(request):
     admin_id = await check_auth(request)
+    if not admin_id:
+        return web.HTTPFound('/')
     logger.info(f"Обращение к маршруту /admin/{admin_id}")
     return await render_template('admin_dashboard.html', request, dashboard=True, admin_id=admin_id)
 
 async def logout_handler(request):
-    try:
-        session = await get_session(request)
-        admin_id = session.get('admin_id', 'unknown')
-        session.clear()
-        session.setdefault('flashed_messages', []).append('Вы вышли из системы!')
-        log_admin_action(admin_id, 'logout', 'Logged out')
-        raise web.HTTPFound('/')
-    except Exception as e:
-        logger.error(f"Ошибка обработки выхода: {e}")
-        raise web.HTTPFound('/')
+    session = await get_session(request)
+    admin_id = session.get('admin_id', 'unknown')
+    session.clear()
+    session.setdefault('flashed_messages', []).append('Вы вышли из системы!')
+    log_admin_action(admin_id, 'logout', 'Logged out')
+    return web.HTTPFound('/')
 
 async def edit_welcome(request):
     admin_id = await check_auth(request)
+    if not admin_id:
+        return web.HTTPFound('/')
     
     if request.method == 'POST':
         try:
@@ -187,10 +187,10 @@ async def edit_welcome(request):
             session = await get_session(request)
             session.setdefault('flashed_messages', []).append('Приветственное сообщение обновлено!')
             log_admin_action(admin_id, 'update_welcome', f'Updated welcome message to: {welcome_message[:50]}...')
-            raise web.HTTPFound(f'/admin/{admin_id}')
+            return web.HTTPFound(f'/admin/{admin_id}')
         except Exception as e:
             logger.error(f"Ошибка обработки POST /edit_welcome: {e}")
-            raise web.HTTPFound(f'/admin/{admin_id}')
+            return web.HTTPFound(f'/admin/{admin_id}')
     
     conn = sqlite3.connect('database.db')
     c = conn.cursor()
@@ -203,6 +203,8 @@ async def edit_welcome(request):
 
 async def broadcast(request):
     admin_id = await check_auth(request)
+    if not admin_id:
+        return web.HTTPFound('/')
     session = await get_session(request)
     
     if request.method == 'POST':
@@ -220,21 +222,23 @@ async def broadcast(request):
                 try:
                     await bot.send_message(chat_id=user[0], text=broadcast_message)
                     sent_count += 1
-                    await asyncio.sleep(0.05)  # Задержка для избежания лимитов Telegram
+                    await asyncio.sleep(0.05)
                 except Exception as e:
                     logger.warning(f"Не удалось отправить сообщение пользователю {user[0]}: {e}")
             
             session.setdefault('flashed_messages', []).append(f'Рассылка отправлена {sent_count} пользователям!')
             log_admin_action(admin_id, 'broadcast', f'Sent broadcast to {sent_count} users')
-            raise web.HTTPFound(f'/admin/{admin_id}')
+            return web.HTTPFound(f'/admin/{admin_id}')
         except Exception as e:
             logger.error(f"Ошибка обработки POST /broadcast: {e}")
-            raise web.HTTPFound(f'/admin/{admin_id}')
+            return web.HTTPFound(f'/admin/{admin_id}')
     
     return await render_template('admin_dashboard.html', request, broadcast=True, admin_id=admin_id)
 
 async def private_message(request):
     admin_id = await check_auth(request)
+    if not admin_id:
+        return web.HTTPFound('/')
     session = await get_session(request)
     
     if request.method == 'POST':
@@ -245,15 +249,17 @@ async def private_message(request):
             await bot.send_message(chat_id=target_user, text=private_message)
             session.setdefault('flashed_messages', []).append('Сообщение отправлено!')
             log_admin_action(admin_id, 'private_message', f'Sent message to user {target_user}')
-            raise web.HTTPFound(f'/admin/{admin_id}')
+            return web.HTTPFound(f'/admin/{admin_id}')
         except Exception as e:
             session.setdefault('flashed_messages', []).append(f'Ошибка отправки: {str(e)}')
-            raise web.HTTPFound(f'/admin/{admin_id}')
+            return web.HTTPFound(f'/admin/{admin_id}')
     
     return await render_template('admin_dashboard.html', request, private_message=True, admin_id=admin_id)
 
 async def user_stats(request):
     admin_id = await check_auth(request)
+    if not admin_id:
+        return web.HTTPFound('/')
     try:
         conn = sqlite3.connect('database.db')
         c = conn.cursor()
@@ -309,10 +315,12 @@ async def user_stats(request):
         return await render_template('admin_dashboard.html', request, stats_page=True, admin_id=admin_id, stats=stats)
     except Exception as e:
         logger.error(f"Ошибка обработки статистики: {e}")
-        return web.Response(status=500, text="Internal Server Error")
+        return web.HTTPFound('/')
 
 async def user_management(request):
     admin_id = await check_auth(request)
+    if not admin_id:
+        return web.HTTPFound('/')
     session = await get_session(request)
     
     conn = sqlite3.connect('database.db')
@@ -339,10 +347,10 @@ async def user_management(request):
             
             conn.commit()
             session.setdefault('flashed_messages', []).append(f'Действие {action} выполнено!')
-            raise web.HTTPFound(f'/admin/{admin_id}')
+            return web.HTTPFound(f'/admin/{admin_id}')
         except Exception as e:
             logger.error(f"Ошибка обработки POST /user_management: {e}")
-            raise web.HTTPFound(f'/admin/{admin_id}')
+            return web.HTTPFound(f'/admin/{admin_id}')
     
     search_query = request.query.get('search', '')
     filter_subscribed = request.query.get('subscribed', '')
@@ -374,6 +382,8 @@ async def user_management(request):
 
 async def activity_logs(request):
     admin_id = await check_auth(request)
+    if not admin_id:
+        return web.HTTPFound('/')
     try:
         conn = sqlite3.connect('database.db')
         c = conn.cursor()
@@ -384,7 +394,7 @@ async def activity_logs(request):
         return await render_template('admin_dashboard.html', request, activity_logs=True, admin_id=admin_id, logs=logs)
     except Exception as e:
         logger.error(f"Ошибка обработки логов активности: {e}")
-        return web.Response(status=500, text="Internal Server Error")
+        return web.HTTPFound('/')
 
 # Проверка подписки на канал
 async def check_subscription(user_id):
