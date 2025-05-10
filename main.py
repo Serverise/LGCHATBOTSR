@@ -394,9 +394,11 @@ async def on_shutdown(dispatcher):
         logger.error(f"Ошибка при остановке бота: {str(e)}")
 
 # Запуск приложения
-async def handle_root(request):
-    logger.info("Перехват запроса к / через aiohttp")
-    return await wsgi_handler(request)
+async def handle_request(request):
+    logger.info(f"Обработка запроса: {request.path}")
+    wsgi_handler = WSGIHandler(app)
+    response = await wsgi_handler(request)
+    return response
 
 if __name__ == '__main__':
     logger.info("Запуск приложения...")
@@ -404,10 +406,11 @@ if __name__ == '__main__':
     # Настройка aiohttp приложения для вебхуков
     aiohttp_app = web.Application()
     
-    # Интеграция Flask с aiohttp через WSGI
-    global wsgi_handler
-    wsgi_handler = WSGIHandler(app)
-    aiohttp_app.router.add_route('*', '/{path:.*}', wsgi_handler)
+    # Регистрация маршрута для обработки всех запросов через WSGI
+    aiohttp_app.router.add_get('/', handle_request)
+    aiohttp_app.router.add_post('/', handle_request)
+    aiohttp_app.router.add_get('/{path:.*}', handle_request)
+    aiohttp_app.router.add_post('/{path:.*}', handle_request)
     
     # Настройка вебхука для Telegram
     webhook_requests_handler = SimpleRequestHandler(
