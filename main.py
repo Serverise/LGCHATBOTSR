@@ -1,10 +1,11 @@
 import logging
 import sqlite3
 from datetime import datetime
+import asyncio
 from flask import Flask, request, render_template, redirect, url_for, flash, session
 import os
 from aiogram import Bot, Dispatcher, types
-from aiogram.filters import CommandStart
+from aiogram.filters import CommandStart, StateFilter
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.types import ReplyKeyboardMarkup, InlineKeyboardMarkup, InlineKeyboardButton
@@ -212,40 +213,53 @@ async def process_admin_buttons(callback_query: types.CallbackQuery, state: FSMC
         await bot.send_message(user_id, "Введите ID пользователя, которому хотите отправить сообщение:")
     
     elif callback_query.data == "user_stats":
-        cursor.execute('SELECT COUNT(*) FROM users')
-        total_users = cursor.fetchone()[0]
-        cursor.execute('SELECT COUNT(*) FROM users WHERE date(join_date) = date("now")')
-        new_today = cursor.fetchone()[0]
-        stats = f"📊 Статистика пользователей:\n\nВсего пользователей: {total_users}\nНовых сегодня: {new_today}"
-        await bot.send_message(user_id, stats)
+        try:
+            cursor.execute('SELECT COUNT(*) FROM users')
+            total_users = cursor.fetchone()[0]
+            cursor.execute('SELECT COUNT(*) FROM users WHERE date(join_date) = date("now")')
+            new_today = cursor.fetchone()[0]
+            stats = f"📊 Статистика пользователей:\n\nВсего пользователей: {total_users}\nНовых сегодня: {new_today}"
+            await bot.send_message(user_id, stats)
+        except Exception as e:
+            logger.error(f"Ошибка при получении статистики: {str(e)}")
+            await bot.send_message(user_id, "Ошибка при получении статистики. Попробуйте позже.")
 
 # Обработка ввода приветственного сообщения
-@dp.message(state=Form.welcome_message)
+@dp.message(StateFilter(Form.welcome_message))
 async def process_welcome_message(message: types.Message, state: FSMContext):
     welcome_msg = message.text
-    cursor.execute('UPDATE channels SET welcome_message = ? WHERE rowid = 1', (welcome_msg,))
-    conn.commit()
-    await state.finish()
-    await message.answer("Приветственное сообщение успешно обновлено!")
+    try:
+        cursor.execute('UPDATE channels SET welcome_message = ? WHERE rowid = 1', (welcome_msg,))
+        conn.commit()
+        await state.finish()
+        await message.answer("Приветственное сообщение успешно обновлено!")
+    except Exception as e:
+        logger.error(f"Ошибка при обновлении приветственного сообщения: {str(e)}")
+        await message.answer("Ошибка при обновлении сообщения. Попробуйте позже.")
 
 # Обработка ввода сообщения для рассылки
-@dp.message(state=Form.broadcast_message)
+@dp.message(StateFilter(Form.broadcast_message))
 async def process_broadcast(message: types.Message, state: FSMContext):
     broadcast_msg = message.text
-    cursor.execute('SELECT user_id FROM users WHERE is_banned = 0 AND is_subscribed = 1')
-    users = cursor.fetchall()
-    success = 0
-    failed = 0
-    for user in users:
-        if await send_message_safe(user[0], broadcast_msg):
-            success += 1
-        else:
-            failed += 1
-    await state.finish()
-    await message.answer(f"Рассылка завершена!\nУспешно: {success}\nНе удалось: {failed}")
+    try:
+        cursor.execute('SELECT user_id FROM users WHERE is_banned = 0 AND is_subscribed = 1')
+        users = cursor.fetchall()
+        success = 0
+        failed = 0
+        for user in users:
+            if await send_message_safe(user[0], broadcast_msg):
+                success += 1
+            else:
+                failed += 1
+            await asyncio.sleep(0.05)  # Ограничение скорости
+        await state.finish()
+        await message.answer(f"Рассылка завершена!\nУспешно: {success}\nНе удалось: {failed}")
+    except Exception as e:
+        logger.error(f"Ошибка при рассылке: {str(e)}")
+        await message.answer("Ошибка при выполнении рассылки. Попробуйте позже.")
 
 # Обработка выбора пользователя для личного сообщения
-@dp.message(state=Form.select_user)
+@dp.message(StateFilter(Form.select_user))
 async def process_select_user(message: types.Message, state: FSMContext):
     try:
         target_user = int(message.text)
@@ -254,9 +268,12 @@ async def process_select_user(message: types.Message, state: FSMContext):
         await message.answer("Введите сообщение для этого пользователя:")
     except ValueError:
         await message.answer("Пожалуйста, введите корректный ID пользователя (только цифры).")
+    except Exception as e:
+        logger.error(f"Ошибка при выборе пользователя: {str(e)}")
+        await message.answer("Произошла ошибка. Попробуйте снова.")
 
 # Обработка личного сообщения
-@dp.message(state=Form.private_message)
+@dp.message(StateFilter(Form.private_message))
 async def process_private_message(message: types.Message, state: FSMContext):
     private_msg = message.text
     data = await state.get_data()
@@ -330,20 +347,27 @@ def admin_dashboard(admin_id):
 # Настройка вебхука
 async def on_startup(_):
     logger.info("Установка вебхука...")
-    webhook_info = await bot.get_webhook_info()
-    if webhook_info.url != WEBHOOK_URL:
-        await bot.set_webhook(url=WEBHOOK_URL)
-        logger.info(f"Вебхук установлен на {WEBHOOK_URL}")
-    else:
-        logger.info("Вебхук уже установлен")
+    try:
+        webhook_info = await bot.get_webhook_info()
+        if webhook_info.url != WEBHOOK_URL:
+            await bot.set_webhook(url=WEBHOOK_URL)
+            logger.info(f"Вебхук установлен на {WEBHOOK_URL}")
+        else:
+            logger.info("Вебхук уже установлен")
+    except Exception as e:
+        logger.error(f"Ошибка при установке вебхука: {str(e)}")
 
 async def on_shutdown(_):
     logger.info("Остановка бота...")
-    await bot.delete_webhook()
-    await bot.session.close()
+    try:
+        await bot.delete_webhook()
+        await bot.session.close()
+    except Exception as e:
+        logger.error(f"Ошибка при остановке бота: {str(e)}")
 
 # Запуск приложения
 if __name__ == '__main__':
+    logger.info("Запуск приложения...")
     init_db()
     # Настройка aiohttp приложения для вебхуков
     aiohttp_app = web.Application()
@@ -361,4 +385,6 @@ if __name__ == '__main__':
     from aiohttp.web import run_app
     dp.startup.register(on_startup)
     dp.shutdown.register(on_shutdown)
-    run_app(aiohttp_app, host='0.0.0.0', port=int(os.getenv('PORT', 5000)))
+    port = int(os.getenv('PORT', 5000))
+    logger.info(f"Запуск сервера на порту {port}...")
+    run_app(aiohttp_app, host='0.0.0.0', port=port)
