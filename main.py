@@ -3,11 +3,11 @@ import asyncio
 import sqlite3
 from datetime import datetime, timedelta
 from flask import Flask, render_template, request, redirect, url_for, flash, session
-from werkzeug.serving import run_simple
 from aiogram import Bot, Dispatcher, types
 from aiogram.fsm.storage.memory import MemoryStorage
 from aiogram.client.default import DefaultBotProperties
 from aiogram.enums import ParseMode, ChatMemberStatus
+import os
 
 # Настройка логирования
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -69,10 +69,6 @@ CREATE TABLE IF NOT EXISTS activity_logs (
 )
 ''')
 conn.commit()
-
-# Новый цикл событий
-loop = asyncio.new_event_loop()
-asyncio.set_event_loop(loop)
 
 # Логирование действий админа
 def log_admin_action(admin_id, action, details):
@@ -463,15 +459,15 @@ async def on_startup():
     except Exception as e:
         logger.error(f"Ошибка инициализации базы данных: {str(e)}")
 
-# Основной цикл приложения
 async def main():
     try:
         await on_startup()
-        bot_task = asyncio.create_task(dp.start_polling(bot, skip_updates=True))
-        flask_task = asyncio.to_thread(run_simple, 'localhost', 5000, app)
-        await asyncio.gather(bot_task, flask_task)
+        await dp.start_polling(bot, skip_updates=True)
+        app.run(host='0.0.0.0', port=int(os.getenv('PORT', 5000)))
     except Exception as e:
         logger.error(f"Ошибка главного цикла: {str(e)}")
+    finally:
+        conn.close()
 
 if __name__ == '__main__':
     try:
