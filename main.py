@@ -4,6 +4,7 @@ import sqlite3
 from datetime import datetime, timedelta
 from flask import Flask, render_template, request, redirect, url_for, flash, session
 import os
+import threading
 
 from aiogram import Bot, Dispatcher, types
 from aiogram.fsm.storage.memory import MemoryStorage
@@ -331,8 +332,11 @@ def user_stats(admin_id):
         cursor.execute('SELECT COUNT(*) FROM users WHERE date(join_date) >= ?', (month_ago,))
         new_month = cursor.fetchone()[0]
         
-        chat = asyncio.run(bot.get_chat(CHANNEL_ID))
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        chat = loop.run_until_complete(bot.get_chat(CHANNEL_ID))
         total_subscribers = chat.members_count if hasattr(chat, 'members_count') else 0
+        loop.close()
         
         today = datetime.now().date()
         cursor.execute('''
@@ -462,19 +466,22 @@ async def on_startup():
 
 # Асинхронный запуск бота
 async def run_bot():
-    await on_startup()
-    await dp.start_polling(bot, skip_updates=True)
+    try:
+        logger.info("Запуск бота...")
+        await on_startup()
+        await dp.start_polling(bot, skip_updates=True)
+    except Exception as e:
+        logger.error(f"Ошибка при запуске бота: {str(e)}")
 
-# Запуск приложения с ботом в отдельном таске
-def run_app():
+# Запуск бота в отдельном потоке
+def start_bot():
     loop = asyncio.new_event_loop()
     asyncio.set_event_loop(loop)
     loop.run_until_complete(run_bot())
-    app.run(host='0.0.0.0', port=int(os.getenv('PORT', 5000)))
+
+# Запуск бота при старте приложения
+bot_thread = threading.Thread(target=start_bot, daemon=True)
+bot_thread.start()
 
 if __name__ == '__main__':
-    try:
-        run_app()
-    except KeyboardInterrupt:
-        conn.close()
-        logger.info("Приложение завершено")
+    app.run(host='0.0.0.0', port=int(os.getenv('PORT', 5000)))
