@@ -146,7 +146,7 @@ async def start_command(message: types.Message):
         )
 
 # Обработка кнопки "Подписаться на канал"
-@dp.message(Text(equals="Подписаться на канал"))
+@dp.message(lambda message: message.text == "Подписаться на канал")
 async def subscribe_channel(message: types.Message):
     user_id = message.from_user.id
     if await check_subscription(user_id):
@@ -169,7 +169,7 @@ async def subscribe_channel(message: types.Message):
         )
 
 # Панель управления для админов
-@dp.message(Text(equals="Панель управления"))
+@dp.message(lambda message: message.text == "Панель управления")
 async def admin_panel(message: types.Message):
     user_id = message.from_user.id
     cursor.execute('SELECT is_admin FROM users WHERE user_id = ?', (user_id,))
