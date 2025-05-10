@@ -2,7 +2,7 @@ import logging
 import sqlite3
 from datetime import datetime
 import asyncio
-from flask import Flask, request, render_template, redirect, url_for, flash, session
+from flask import Flask, request, render_template, redirect, url_for, flash, session, jsonify
 import os
 from aiogram import Bot, Dispatcher, types
 from aiogram.filters import CommandStart, StateFilter
@@ -13,7 +13,7 @@ from aiogram.enums import ParseMode, ChatMemberStatus
 from aiogram.client.default import DefaultBotProperties
 from aiogram.webhook.aiohttp_server import SimpleRequestHandler, setup_application
 from aiohttp import web
-from aiohttp_wsgi import WSGIHandler
+import json
 
 # Настройка логирования
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -64,6 +64,16 @@ CREATE TABLE IF NOT EXISTS channels (
 )
 ''')
 
+cursor.execute('''
+CREATE TABLE IF NOT EXISTS activity_logs (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    admin_id INTEGER,
+    action TEXT,
+    details TEXT,
+    timestamp TEXT
+)
+''')
+
 conn.commit()
 
 # Состояния для FSM
@@ -102,6 +112,16 @@ async def send_message_safe(chat_id: int, text: str) -> bool:
     except Exception as e:
         logger.error(f"Ошибка отправки сообщения пользователю {chat_id}: {str(e)}")
         return False
+
+# Логирование действий админа
+def log_admin_action(admin_id, action, details):
+    timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    cursor.execute('''
+        INSERT INTO activity_logs (admin_id, action, details, timestamp)
+        VALUES (?, ?, ?, ?)
+    ''', (admin_id, action, details, timestamp))
+    conn.commit()
+    logger.info(f"Действие админа {admin_id}: {action} - {details}")
 
 # Команда /start
 @dp.message(CommandStart())
@@ -240,9 +260,11 @@ async def process_admin_buttons(callback_query: types.CallbackQuery, state: FSMC
 @dp.message(StateFilter(Form.welcome_message))
 async def process_welcome_message(message: types.Message, state: FSMContext):
     welcome_msg = message.text
+    user_id = message.from_user.id
     try:
         cursor.execute('UPDATE channels SET welcome_message = ? WHERE rowid = 1', (welcome_msg,))
         conn.commit()
+        log_admin_action(user_id, "edit_welcome", f"Обновлено приветственное сообщение: {welcome_msg}")
         await state.finish()
         await message.answer("Приветственное сообщение успешно обновлено!")
     except Exception as e:
@@ -253,6 +275,7 @@ async def process_welcome_message(message: types.Message, state: FSMContext):
 @dp.message(StateFilter(Form.broadcast_message))
 async def process_broadcast(message: types.Message, state: FSMContext):
     broadcast_msg = message.text
+    user_id = message.from_user.id
     try:
         cursor.execute('SELECT user_id FROM users WHERE is_banned = 0 AND is_subscribed = 1')
         users = cursor.fetchall()
@@ -264,6 +287,7 @@ async def process_broadcast(message: types.Message, state: FSMContext):
             else:
                 failed += 1
             await asyncio.sleep(0.05)  # Ограничение скорости
+        log_admin_action(user_id, "broadcast", f"Рассылка: Успешно: {success}, Не удалось: {failed}")
         await state.finish()
         await message.answer(f"Рассылка завершена!\nУспешно: {success}\nНе удалось: {failed}")
     except Exception as e:
@@ -288,11 +312,14 @@ async def process_select_user(message: types.Message, state: FSMContext):
 @dp.message(StateFilter(Form.private_message))
 async def process_private_message(message: types.Message, state: FSMContext):
     private_msg = message.text
+    user_id = message.from_user.id
     data = await state.get_data()
     target_user = data.get('target_user')
     if await send_message_safe(target_user, private_msg):
+        log_admin_action(user_id, "private_message", f"Сообщение отправлено пользователю {target_user}: {private_msg}")
         await message.answer(f"Сообщение успешно отправлено пользователю {target_user}")
     else:
+        log_admin_action(user_id, "private_message_failed", f"Не удалось отправить сообщение пользователю {target_user}")
         await message.answer(f"Не удалось отправить сообщение пользователю {target_user}")
     await state.finish()
 
@@ -342,7 +369,7 @@ def admin_panel():
                     result = cursor.fetchone()
                     if result and result[0] == 1:
                         session['admin_id'] = admin_id
-                        logger.info(f"Успешный вход для admin_id={admin_id}")
+                        log_admin_action(admin_id, "login", "Успешный вход в админ-панель")
                         return redirect(url_for('admin_dashboard', admin_id=admin_id))
                     flash('У вас нет прав администратора.')
                     logger.warning(f"Нет прав администратора для admin_id={admin_id}")
@@ -360,7 +387,7 @@ def admin_panel():
         logger.error(f"Ошибка при обработке маршрута /: {str(e)}")
         return "Internal Server Error", 500
 
-@app.route('/admin/<int:admin_id>')
+@app.route('/admin/<int:admin_id>', methods=['GET'])
 def admin_dashboard(admin_id):
     logger.info(f"Обращение к маршруту /admin/{admin_id}")
     try:
@@ -371,6 +398,204 @@ def admin_dashboard(admin_id):
     except Exception as e:
         logger.error(f"Ошибка при обработке маршрута /admin/{admin_id}: {str(e)}")
         return "Internal Server Error", 500
+
+@app.route('/admin/<int:admin_id>/edit_welcome', methods=['GET', 'POST'])
+def edit_welcome(admin_id):
+    logger.info(f"Обращение к маршруту /admin/{admin_id}/edit_welcome")
+    try:
+        if not check_admin_auth(admin_id):
+            logger.warning(f"Неавторизованный доступ к /admin/{admin_id}/edit_welcome")
+            return redirect(url_for('admin_panel'))
+        if request.method == 'POST':
+            welcome_message = request.form.get('welcome_message')
+            cursor.execute('UPDATE channels SET welcome_message = ? WHERE rowid = 1', (welcome_message,))
+            conn.commit()
+            log_admin_action(admin_id, "edit_welcome", f"Обновлено приветственное сообщение: {welcome_message}")
+            flash('Приветственное сообщение успешно обновлено!')
+            return redirect(url_for('edit_welcome', admin_id=admin_id))
+        cursor.execute('SELECT welcome_message FROM channels LIMIT 1')
+        current_msg = cursor.fetchone()
+        current_msg = current_msg[0] if current_msg and current_msg[0] else "Добро пожаловать в наш канал!"
+        return render_template('admin_dashboard.html', admin_id=admin_id, edit_welcome=True, current_msg=current_msg)
+    except Exception as e:
+        logger.error(f"Ошибка при обработке маршрута /admin/{admin_id}/edit_welcome: {str(e)}")
+        return "Internal Server Error", 500
+
+@app.route('/admin/<int:admin_id>/broadcast', methods=['GET', 'POST'])
+def broadcast(admin_id):
+    logger.info(f"Обращение к маршруту /admin/{admin_id}/broadcast")
+    try:
+        if not check_admin_auth(admin_id):
+            logger.warning(f"Неавторизованный доступ к /admin/{admin_id}/broadcast")
+            return redirect(url_for('admin_panel'))
+        if request.method == 'POST':
+            broadcast_message = request.form.get('broadcast_message')
+            cursor.execute('SELECT user_id FROM users WHERE is_banned = 0 AND is_subscribed = 1')
+            users = cursor.fetchall()
+            success = 0
+            failed = 0
+            loop = asyncio.get_event_loop()
+            for user in users:
+                if await loop.run_in_executor(None, lambda: asyncio.run(send_message_safe(user[0], broadcast_message))):
+                    success += 1
+                else:
+                    failed += 1
+            log_admin_action(admin_id, "broadcast", f"Рассылка: Успешно: {success}, Не удалось: {failed}")
+            flash(f'Рассылка завершена! Успешно: {success}, Не удалось: {failed}')
+            return redirect(url_for('broadcast', admin_id=admin_id))
+        return render_template('admin_dashboard.html', admin_id=admin_id, broadcast=True)
+    except Exception as e:
+        logger.error(f"Ошибка при обработке маршрута /admin/{admin_id}/broadcast: {str(e)}")
+        return "Internal Server Error", 500
+
+@app.route('/admin/<int:admin_id>/private_message', methods=['GET', 'POST'])
+def private_message(admin_id):
+    logger.info(f"Обращение к маршруту /admin/{admin_id}/private_message")
+    try:
+        if not check_admin_auth(admin_id):
+            logger.warning(f"Неавторизованный доступ к /admin/{admin_id}/private_message")
+            return redirect(url_for('admin_panel'))
+        if request.method == 'POST':
+            target_user = request.form.get('target_user')
+            private_msg = request.form.get('private_message')
+            try:
+                target_user = int(target_user)
+                loop = asyncio.get_event_loop()
+                if await loop.run_in_executor(None, lambda: asyncio.run(send_message_safe(target_user, private_msg))):
+                    log_admin_action(admin_id, "private_message", f"Сообщение отправлено пользователю {target_user}: {private_msg}")
+                    flash(f'Сообщение успешно отправлено пользователю {target_user}')
+                else:
+                    log_admin_action(admin_id, "private_message_failed", f"Не удалось отправить сообщение пользователю {target_user}")
+                    flash(f'Не удалось отправить сообщение пользователю {target_user}')
+            except ValueError:
+                flash('Пожалуйста, введите корректный ID пользователя.')
+            return redirect(url_for('private_message', admin_id=admin_id))
+        return render_template('admin_dashboard.html', admin_id=admin_id, private_message=True)
+    except Exception as e:
+        logger.error(f"Ошибка при обработке маршрута /admin/{admin_id}/private_message: {str(e)}")
+        return "Internal Server Error", 500
+
+@app.route('/admin/<int:admin_id>/user_stats', methods=['GET'])
+def user_stats(admin_id):
+    logger.info(f"Обращение к маршруту /admin/{admin_id}/user_stats")
+    try:
+        if not check_admin_auth(admin_id):
+            logger.warning(f"Неавторизованный доступ к /admin/{admin_id}/user_stats")
+            return redirect(url_for('admin_panel'))
+        
+        # Статистика пользователей
+        cursor.execute('SELECT COUNT(*) FROM users')
+        total_users = cursor.fetchone()[0]
+        cursor.execute('SELECT COUNT(*) FROM users WHERE date(join_date) = date("now")')
+        new_today = cursor.fetchone()[0]
+        cursor.execute('SELECT COUNT(*) FROM users WHERE date(join_date) >= date("now", "-7 days")')
+        new_week = cursor.fetchone()[0]
+        cursor.execute('SELECT COUNT(*) FROM users WHERE date(join_date) >= date("now", "-30 days")')
+        new_month = cursor.fetchone()[0]
+
+        # Статистика подписок
+        cursor.execute('SELECT COUNT(*) FROM users WHERE is_subscribed = 1')
+        total_subscribers = cursor.fetchone()[0]
+        cursor.execute('SELECT COUNT(*) FROM users WHERE is_subscribed = 1 AND date(last_subscription_change) = date("now")')
+        subscribed_today = cursor.fetchone()[0]
+        cursor.execute('SELECT COUNT(*) FROM users WHERE is_subscribed = 0 AND date(last_subscription_change) = date("now")')
+        unsubscribed_today = cursor.fetchone()[0]
+
+        # Данные для графика
+        labels = []
+        data = []
+        for i in range(7):
+            date = datetime.now().date().isoformat()
+            cursor.execute('SELECT COUNT(*) FROM users WHERE date(join_date) = ?', (date,))
+            count = cursor.fetchone()[0]
+            labels.append(date)
+            data.append(count)
+
+        chart_data = {
+            'labels': labels,
+            'datasets': [{
+                'label': 'Новые пользователи',
+                'data': data,
+                'backgroundColor': '#d97706',
+                'borderColor': '#b45309',
+                'borderWidth': 1
+            }]
+        }
+
+        stats = {
+            'total_users': total_users,
+            'new_today': new_today,
+            'new_week': new_week,
+            'new_month': new_month,
+            'total_subscribers': total_subscribers,
+            'subscribed_today': subscribed_today,
+            'unsubscribed_today': unsubscribed_today,
+            'chart_data': chart_data
+        }
+
+        return render_template('admin_dashboard.html', admin_id=admin_id, stats_page=True, stats=stats)
+    except Exception as e:
+        logger.error(f"Ошибка при обработке маршрута /admin/{admin_id}/user_stats: {str(e)}")
+        return "Internal Server Error", 500
+
+@app.route('/admin/<int:admin_id>/user_management', methods=['GET', 'POST'])
+def user_management(admin_id):
+    logger.info(f"Обращение к маршруту /admin/{admin_id}/user_management")
+    try:
+        if not check_admin_auth(admin_id):
+            logger.warning(f"Неавторизованный доступ к /admin/{admin_id}/user_management")
+            return redirect(url_for('admin_panel'))
+        
+        if request.method == 'POST':
+            user_id = int(request.form.get('user_id'))
+            action = request.form.get('action')
+            
+            if action == 'ban':
+                cursor.execute('UPDATE users SET is_banned = 1 WHERE user_id = ?', (user_id,))
+                log_admin_action(admin_id, "ban_user", f"Пользователь {user_id} заблокирован")
+            elif action == 'unban':
+                cursor.execute('UPDATE users SET is_banned = 0 WHERE user_id = ?', (user_id,))
+                log_admin_action(admin_id, "unban_user", f"Пользователь {user_id} разблокирован")
+            elif action == 'make_admin':
+                cursor.execute('UPDATE users SET is_admin = 1 WHERE user_id = ?', (user_id,))
+                log_admin_action(admin_id, "make_admin", f"Пользователь {user_id} назначен администратором")
+            elif action == 'remove_admin':
+                cursor.execute('UPDATE users SET is_admin = 0 WHERE user_id = ?', (user_id,))
+                log_admin_action(admin_id, "remove_admin", f"Пользователь {user_id} лишен прав администратора")
+            
+            conn.commit()
+            flash('Действие успешно выполнено!')
+            return redirect(url_for('user_management', admin_id=admin_id))
+
+        cursor.execute('SELECT user_id, username, first_name, last_name, join_date, is_subscribed, is_admin, is_banned FROM users')
+        users = cursor.fetchall()
+        return render_template('admin_dashboard.html', admin_id=admin_id, user_management=True, users=users)
+    except Exception as e:
+        logger.error(f"Ошибка при обработке маршрута /admin/{admin_id}/user_management: {str(e)}")
+        return "Internal Server Error", 500
+
+@app.route('/admin/<int:admin_id>/activity_logs', methods=['GET'])
+def activity_logs(admin_id):
+    logger.info(f"Обращение к маршруту /admin/{admin_id}/activity_logs")
+    try:
+        if not check_admin_auth(admin_id):
+            logger.warning(f"Неавторизованный доступ к /admin/{admin_id}/activity_logs")
+            return redirect(url_for('admin_panel'))
+        
+        cursor.execute('SELECT id, admin_id, action, details, timestamp FROM activity_logs ORDER BY timestamp DESC')
+        logs = cursor.fetchall()
+        return render_template('admin_dashboard.html', admin_id=admin_id, activity_logs=True, logs=logs)
+    except Exception as e:
+        logger.error(f"Ошибка при обработке маршрута /admin/{admin_id}/activity_logs: {str(e)}")
+        return "Internal Server Error", 500
+
+@app.route('/logout')
+def logout():
+    admin_id = session.get('admin_id')
+    if admin_id:
+        log_admin_action(admin_id, "logout", "Выход из админ-панели")
+    session.pop('admin_id', None)
+    return redirect(url_for('admin_panel'))
 
 # Настройка вебхука
 async def on_startup(dispatcher):
@@ -393,37 +618,35 @@ async def on_shutdown(dispatcher):
     except Exception as e:
         logger.error(f"Ошибка при остановке бота: {str(e)}")
 
-# Запуск приложения
-async def handle_request(request):
-    logger.info(f"Обработка запроса: {request.path}")
-    wsgi_handler = WSGIHandler(app)
-    response = await wsgi_handler(request)
-    return response
+# Запуск aiohttp сервера для вебхуков
+async def start_aiohttp_app():
+    aiohttp_app = web.Application()
+    webhook_requests_handler = SimpleRequestHandler(dispatcher=dp, bot=bot)
+    webhook_requests_handler.register(aiohttp_app, path=WEBHOOK_PATH)
+    setup_application(aiohttp_app, dp, bot=bot)
+    runner = web.AppRunner(aiohttp_app)
+    await runner.setup()
+    site = web.TCPSite(runner, '127.0.0.1', 8081)
+    await site.start()
+    logger.info("aiohttp сервер запущен на порту 8081 для вебхуков")
+    return runner
+
+# Запуск Flask сервера
+def start_flask_app():
+    port = int(os.getenv('PORT', 8080))
+    app.run(host='0.0.0.0', port=port, debug=False)
 
 if __name__ == '__main__':
     logger.info("Запуск приложения...")
     init_db()
-    # Настройка aiohttp приложения для вебхуков
-    aiohttp_app = web.Application()
     
-    # Регистрация маршрута для обработки всех запросов через WSGI
-    aiohttp_app.router.add_get('/', handle_request)
-    aiohttp_app.router.add_post('/', handle_request)
-    aiohttp_app.router.add_get('/{path:.*}', handle_request)
-    aiohttp_app.router.add_post('/{path:.*}', handle_request)
-    
-    # Настройка вебхука для Telegram
-    webhook_requests_handler = SimpleRequestHandler(
-        dispatcher=dp,
-        bot=bot,
-    )
-    webhook_requests_handler.register(aiohttp_app, path=WEBHOOK_PATH)
-    setup_application(aiohttp_app, dp, bot=bot)
-
-    # Запуск Flask и вебхуков
-    from aiohttp.web import run_app
+    # Запуск Flask и aiohttp в отдельных потоках
+    loop = asyncio.get_event_loop()
     dp.startup.register(on_startup)
     dp.shutdown.register(on_shutdown)
-    port = int(os.getenv('PORT', 5000))
-    logger.info(f"Запуск сервера на порту {port}...")
-    run_app(aiohttp_app, host='0.0.0.0', port=port)
+    
+    # Запускаем aiohttp сервер для вебхуков
+    aiohttp_task = loop.create_task(start_aiohttp_app())
+    
+    # Запускаем Flask сервер в основном потоке
+    start_flask_app()
