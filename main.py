@@ -4,11 +4,14 @@ import sqlite3
 from datetime import datetime, timedelta
 from flask import Flask, render_template, request, redirect, url_for, flash, session
 import os
-import threading
+
+try:
+    from aiogram.client.default import DefaultBotProperties  # Попытка импорта для 3.4.1
+except ImportError:
+    from aiogram.types import DefaultBotProperties  # Резервный импорт на случай изменения структуры
 
 from aiogram import Bot, Dispatcher, types
 from aiogram.fsm.storage.memory import MemoryStorage
-from aiogram.client.default import DefaultBotProperties  # Проверяем импорт
 from aiogram.enums import ParseMode, ChatMemberStatus
 
 # Настройка логирования
@@ -464,24 +467,20 @@ async def on_startup():
     except Exception as e:
         logger.error(f"Ошибка инициализации базы данных: {str(e)}")
 
-# Асинхронный запуск бота
-async def run_bot():
-    try:
-        logger.info("Запуск бота...")
-        await on_startup()
-        await dp.start_polling(bot, skip_updates=True)
-    except Exception as e:
-        logger.error(f"Ошибка при запуске бота: {str(e)}")
-
-# Запуск бота в отдельном потоке
+# Запуск бота
 def start_bot():
     loop = asyncio.new_event_loop()
     asyncio.set_event_loop(loop)
-    loop.run_until_complete(run_bot())
-
-# Запуск бота при старте приложения
-bot_thread = threading.Thread(target=start_bot, daemon=True)
-bot_thread.start()
+    try:
+        loop.run_until_complete(on_startup())
+        loop.run_until_complete(dp.start_polling(bot, skip_updates=True))
+    except Exception as e:
+        logger.error(f"Ошибка при запуске бота: {str(e)}")
+    finally:
+        loop.close()
 
 if __name__ == '__main__':
+    import threading
+    bot_thread = threading.Thread(target=start_bot, daemon=True)
+    bot_thread.start()
     app.run(host='0.0.0.0', port=int(os.getenv('PORT', 5000)))
