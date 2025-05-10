@@ -8,11 +8,12 @@ from aiogram import Bot, Dispatcher, types
 from aiogram.filters import CommandStart, StateFilter
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
-from aiogram.types import ReplyKeyboardMarkup, InlineKeyboardMarkup, InlineKeyboardButton
+from aiogram.types import ReplyKeyboardMarkup, KeyboardButton, InlineKeyboardMarkup, InlineKeyboardButton
 from aiogram.enums import ParseMode, ChatMemberStatus
 from aiogram.client.default import DefaultBotProperties
 from aiogram.webhook.aiohttp_server import SimpleRequestHandler, setup_application
 from aiohttp import web
+from aiohttp_wsgi import WSGIHandler
 
 # Настройка логирования
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -132,24 +133,30 @@ async def start_command(message: types.Message):
             cursor.execute('SELECT welcome_message FROM channels LIMIT 1')
             welcome_msg = cursor.fetchone()
             msg = welcome_msg[0] if welcome_msg and welcome_msg[0] else "Спасибо за подписку! Вы добавлены в канал."
-            keyboard = ReplyKeyboardMarkup(resize_keyboard=True)
+            
+            # Инициализация клавиатуры с кнопками
+            keyboard_buttons = []
             cursor.execute('SELECT is_admin FROM users WHERE user_id = ?', (user_id,))
             result = cursor.fetchone()
             is_admin = result[0] if result else 0
             if is_admin:
-                keyboard.add(types.KeyboardButton("Панель управления"))
+                keyboard_buttons.append([KeyboardButton(text="Панель управления")])
+            
+            keyboard = ReplyKeyboardMarkup(keyboard=keyboard_buttons, resize_keyboard=True)
             await message.answer(msg, reply_markup=keyboard)
         except Exception as e:
-            logger.error(f"Ошибка базы данных при получении приветственного сообщения: {str(e)}")
+            logger.error(f"Ошибка при отправке приветственного сообщения: {str(e)}")
             await message.answer("Произошла ошибка. Попробуйте позже.")
     else:
-        keyboard = ReplyKeyboardMarkup(resize_keyboard=True)
-        keyboard.add(types.KeyboardButton("Подписаться на канал"))
+        # Инициализация клавиатуры с кнопками
+        keyboard_buttons = [[KeyboardButton(text="Подписаться на канал")]]
         cursor.execute('SELECT is_admin FROM users WHERE user_id = ?', (user_id,))
         result = cursor.fetchone()
         is_admin = result[0] if result else 0
         if is_admin:
-            keyboard.add(types.KeyboardButton("Панель управления"))
+            keyboard_buttons.append([KeyboardButton(text="Панель управления")])
+        
+        keyboard = ReplyKeyboardMarkup(keyboard=keyboard_buttons, resize_keyboard=True)
         await message.answer(
             f"Пожалуйста, подпишитесь на канал по ссылке: {CHANNEL_LINK}",
             reply_markup=keyboard
@@ -163,19 +170,22 @@ async def subscribe_channel(message: types.Message):
         cursor.execute('SELECT welcome_message FROM channels LIMIT 1')
         welcome_msg = cursor.fetchone()
         msg = welcome_msg[0] if welcome_msg and welcome_msg[0] else "Спасибо за подписку! Вы добавлены в канал."
-        keyboard = ReplyKeyboardMarkup(resize_keyboard=True)
+        
+        # Инициализация клавиатуры с кнопками
+        keyboard_buttons = []
         cursor.execute('SELECT is_admin FROM users WHERE user_id = ?', (user_id,))
         result = cursor.fetchone()
         is_admin = result[0] if result else 0
         if is_admin:
-            keyboard.add(types.KeyboardButton("Панель управления"))
+            keyboard_buttons.append([KeyboardButton(text="Панель управления")])
+        
+        keyboard = ReplyKeyboardMarkup(keyboard=keyboard_buttons, resize_keyboard=True)
         await message.answer(msg, reply_markup=keyboard)
     else:
-        keyboard = ReplyKeyboardMarkup(resize_keyboard=True)
-        keyboard.add(types.KeyboardButton("Подписаться на канал"))
+        keyboard_buttons = [[KeyboardButton(text="Подписаться на канал")]]
         await message.answer(
             f"Вы не подписаны на канал. Пожалуйста, подпишитесь по ссылке: {CHANNEL_LINK}",
-            reply_markup=keyboard
+            reply_markup=ReplyKeyboardMarkup(keyboard=keyboard_buttons, resize_keyboard=True)
         )
 
 # Панель управления для админов
@@ -319,32 +329,48 @@ def check_admin_auth(admin_id):
 # Маршруты Flask
 @app.route('/', methods=['GET', 'POST'])
 def admin_panel():
-    if request.method == 'POST':
-        admin_id = request.form.get('admin_id')
-        password = request.form.get('password')
-        try:
-            admin_id = int(admin_id)
-            if password == 'LegerisKEY-738197481275618273858173':
-                cursor.execute('SELECT is_admin FROM users WHERE user_id = ?', (admin_id,))
-                result = cursor.fetchone()
-                if result and result[0] == 1:
-                    session['admin_id'] = admin_id
-                    return redirect(url_for('admin_dashboard', admin_id=admin_id))
-                flash('У вас нет прав администратора.')
-            else:
-                flash('Неверный пароль.')
-        except ValueError:
-            flash('Введите корректный ID администратора.')
-        except Exception as e:
-            logger.error(f"Ошибка базы данных при проверке админа {admin_id}: {str(e)}")
-            flash('Произошла ошибка. Попробуйте позже.')
-    return render_template('admin_dashboard.html', login_page=True)
+    logger.info("Обращение к маршруту /")
+    try:
+        if request.method == 'POST':
+            admin_id = request.form.get('admin_id')
+            password = request.form.get('password')
+            try:
+                admin_id = int(admin_id)
+                logger.info(f"Попытка входа с admin_id={admin_id}")
+                if password == 'LegerisKEY-738197481275618273858173':
+                    cursor.execute('SELECT is_admin FROM users WHERE user_id = ?', (admin_id,))
+                    result = cursor.fetchone()
+                    if result and result[0] == 1:
+                        session['admin_id'] = admin_id
+                        logger.info(f"Успешный вход для admin_id={admin_id}")
+                        return redirect(url_for('admin_dashboard', admin_id=admin_id))
+                    flash('У вас нет прав администратора.')
+                    logger.warning(f"Нет прав администратора для admin_id={admin_id}")
+                else:
+                    flash('Неверный пароль.')
+                    logger.warning("Неверный пароль")
+            except ValueError:
+                flash('Введите корректный ID администратора.')
+                logger.warning("Некорректный ID администратора")
+            except Exception as e:
+                logger.error(f"Ошибка базы данных при проверке админа {admin_id}: {str(e)}")
+                flash('Произошла ошибка. Попробуйте позже.')
+        return render_template('admin_dashboard.html', login_page=True)
+    except Exception as e:
+        logger.error(f"Ошибка при обработке маршрута /: {str(e)}")
+        return "Internal Server Error", 500
 
 @app.route('/admin/<int:admin_id>')
 def admin_dashboard(admin_id):
-    if not check_admin_auth(admin_id):
-        return redirect(url_for('admin_panel'))
-    return render_template('admin_dashboard.html', admin_id=admin_id, dashboard=True)
+    logger.info(f"Обращение к маршруту /admin/{admin_id}")
+    try:
+        if not check_admin_auth(admin_id):
+            logger.warning(f"Неавторизованный доступ к /admin/{admin_id}")
+            return redirect(url_for('admin_panel'))
+        return render_template('admin_dashboard.html', admin_id=admin_id, dashboard=True)
+    except Exception as e:
+        logger.error(f"Ошибка при обработке маршрута /admin/{admin_id}: {str(e)}")
+        return "Internal Server Error", 500
 
 # Настройка вебхука
 async def on_startup(dispatcher):
@@ -368,20 +394,28 @@ async def on_shutdown(dispatcher):
         logger.error(f"Ошибка при остановке бота: {str(e)}")
 
 # Запуск приложения
+async def handle_root(request):
+    logger.info("Перехват запроса к / через aiohttp")
+    return await wsgi_handler(request)
+
 if __name__ == '__main__':
     logger.info("Запуск приложения...")
     init_db()
     # Настройка aiohttp приложения для вебхуков
     aiohttp_app = web.Application()
+    
+    # Интеграция Flask с aiohttp через WSGI
+    global wsgi_handler
+    wsgi_handler = WSGIHandler(app)
+    aiohttp_app.router.add_route('*', '/{path:.*}', wsgi_handler)
+    
+    # Настройка вебхука для Telegram
     webhook_requests_handler = SimpleRequestHandler(
         dispatcher=dp,
         bot=bot,
     )
     webhook_requests_handler.register(aiohttp_app, path=WEBHOOK_PATH)
     setup_application(aiohttp_app, dp, bot=bot)
-
-    # Интеграция Flask с aiohttp
-    app.aiohttp_app = aiohttp_app
 
     # Запуск Flask и вебхуков
     from aiohttp.web import run_app
