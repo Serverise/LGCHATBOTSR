@@ -4,6 +4,7 @@ import sqlite3
 from datetime import datetime, timedelta
 from flask import Flask, render_template, request, redirect, url_for, flash, session
 import os
+import threading
 
 from aiogram import Bot, Dispatcher, types
 from aiogram.fsm.storage.memory import MemoryStorage
@@ -192,7 +193,6 @@ def admin_panel():
         try:
             admin_id = int(admin_id)
             if password == ADMIN_PASSWORD:
-                # Проверка в базе данных
                 cursor.execute('SELECT is_admin FROM users WHERE user_id = ?', (admin_id,))
                 result = cursor.fetchone()
                 if result and result[0] == 1:
@@ -200,7 +200,6 @@ def admin_panel():
                     log_admin_action(admin_id, "Вход", "Админ вошел в систему")
                     return redirect(url_for('admin_dashboard', admin_id=admin_id))
                 else:
-                    # Резервная проверка для ADMIN_ID
                     if admin_id == ADMIN_ID:
                         cursor.execute('INSERT OR REPLACE INTO users (user_id, is_admin) VALUES (?, ?)', (admin_id, 1))
                         conn.commit()
@@ -255,13 +254,15 @@ def edit_welcome(admin_id):
         return redirect(url_for('admin_dashboard', admin_id=admin_id))
 
 @app.route('/admin/<int:admin_id>/broadcast', methods=['GET', 'POST'])
-async def broadcast(admin_id):
+def broadcast(admin_id):
     if not check_admin_auth(admin_id):
         return redirect(url_for('admin_panel'))
 
     if request.method == 'POST':
         broadcast_msg = request.form.get('broadcast_message')
         if broadcast_msg:
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
             try:
                 cursor.execute('SELECT user_id FROM users WHERE is_banned = 0 AND is_subscribed = 1')
                 users = cursor.fetchall()
@@ -269,11 +270,11 @@ async def broadcast(admin_id):
                 failed = 0
                 
                 for user in users:
-                    if await send_message_safe(user[0], broadcast_msg):
+                    if loop.run_until_complete(send_message_safe(user[0], broadcast_msg)):
                         success += 1
                     else:
                         failed += 1
-                    await asyncio.sleep(0.05)  # Ограничение скорости
+                    loop.run_until_complete(asyncio.sleep(0.05))  # Ограничение скорости
                 
                 log_admin_action(admin_id, "Рассылка", f"Отправлено {success} пользователям, не удалось: {failed}")
                 flash(f'Рассылка завершена! Успешно: {success}, Не удалось: {failed}')
@@ -281,13 +282,15 @@ async def broadcast(admin_id):
             except Exception as e:
                 logger.error(f"Ошибка при рассылке: {str(e)}")
                 flash('Ошибка при рассылке.')
+            finally:
+                loop.close()
         else:
             flash('Введите текст сообщения.')
 
     return render_template('admin_dashboard.html', admin_id=admin_id, broadcast=True)
 
 @app.route('/admin/<int:admin_id>/private_message', methods=['GET', 'POST'])
-async def private_message(admin_id):
+def private_message(admin_id):
     if not check_admin_auth(admin_id):
         return redirect(url_for('admin_panel'))
 
@@ -297,16 +300,19 @@ async def private_message(admin_id):
         try:
             target_user = int(target_user)
             if private_msg:
+                loop = asyncio.new_event_loop()
+                asyncio.set_event_loop(loop)
                 cursor.execute('SELECT is_banned FROM users WHERE user_id = ?', (target_user,))
                 user = cursor.fetchone()
                 if user and user[0] == 0:
-                    if await send_message_safe(target_user, private_msg):
+                    if loop.run_until_complete(send_message_safe(target_user, private_msg)):
                         log_admin_action(admin_id, "Личное сообщение", f"Отправлено пользователю {target_user}")
                         flash(f'Сообщение отправлено пользователю {target_user}')
                     else:
                         flash(f'Ошибка отправки сообщения пользователю {target_user}.')
                 else:
                     flash('Пользователь не найден или заблокирован.')
+                loop.close()
                 return redirect(url_for('admin_dashboard', admin_id=admin_id))
             else:
                 flash('Введите текст сообщения.')
@@ -456,7 +462,7 @@ def logout():
     session.pop('admin_id', None)
     return redirect(url_for('admin_panel'))
 
-# Инициализация базы данных (синхронная версия)
+# Инициализация базы данных
 def init_db():
     try:
         cursor.execute('SELECT COUNT(*) FROM channels')
@@ -483,14 +489,19 @@ async def start_bot():
     except Exception as e:
         logger.error(f"Ошибка при запуске бота: {str(e)}")
 
+# Запуск бота в отдельном потоке
+def run_bot():
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
+    loop.run_until_complete(start_bot())
+    loop.close()
+
 # Инициализация приложения
 init_db()  # Вызываем синхронно перед запуском
 
 if __name__ == '__main__':
-    # Запускаем бота в основном потоке через asyncio.run
-    try:
-        asyncio.run(start_bot())
-    except Exception as e:
-        logger.error(f"Ошибка при запуске приложения: {str(e)}")
+    # Запускаем бота в отдельном потоке
+    bot_thread = threading.Thread(target=run_bot, daemon=True)
+    bot_thread.start()
     # Запускаем Flask
     app.run(host='0.0.0.0', port=int(os.getenv('PORT', 5000)))
