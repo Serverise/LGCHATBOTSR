@@ -10,6 +10,7 @@ from aiogram.fsm.state import State, StatesGroup
 from aiogram.types import ReplyKeyboardMarkup, KeyboardButton, InlineKeyboardMarkup, InlineKeyboardButton
 from aiogram.enums import ParseMode, ChatMemberStatus
 from aiogram.client.default import DefaultBotProperties
+from aiogram.webhook.aiohttp_server import SimpleRequestHandler, setup_application
 import jinja2
 import os
 
@@ -678,12 +679,10 @@ if __name__ == '__main__':
     app.router.add_get('/logout', logout)
     
     # Настройка вебхука для бота
-    webhook_requests_handler = SimpleRequestHandler(dispatcher=dp, bot=bot)
-    webhook_requests_handler.register(app, path=WEBHOOK_PATH)
-    setup_application(app, dp, bot=bot)
-    
     dp.startup.register(on_startup)
     dp.shutdown.register(on_shutdown)
+    dp.webhook.setup(webhook_path=WEBHOOK_PATH)
+    setup_application(app, dp, bot=bot)
     
     # Запуск сервера
     port = int(os.getenv('PORT', 8080))
