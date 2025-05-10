@@ -3,4 +3,3 @@ aiogram==3.4.1
 aiohttp==3.9.5
 certifi==2023.7.22
 werkzeug==3.0.1
-gunicorn==21.2.0
