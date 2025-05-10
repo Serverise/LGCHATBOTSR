@@ -41,7 +41,7 @@ def init_db():
     logger.info("Админ 5033892308 успешно добавлен в базу данных")
 
 # Инициализация бота и диспетчера
-BOT_TOKEN = os.getenv('BOT_TOKEN', 'your-bot-token')  # Укажите токен в переменной окружения
+BOT_TOKEN = os.getenv('BOT_TOKEN', '7731278147:AAGNBi8Td-kSWr0Hhxdh0r46fXKzVsI0S2w')  # Укажите токен в переменной окружения
 WEBHOOK_PATH = '/webhook'
 WEBHOOK_URL = os.getenv('WEBHOOK_URL', 'https://lgchatbotsr.onrender.com') + WEBHOOK_PATH
 bot = Bot(token=BOT_TOKEN)
