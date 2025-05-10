@@ -1,484 +1,328 @@
-<!DOCTYPE html>
-<html lang="ru">
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>LegerisChatManager - {% if login_page %}Авторизация{% else %}Панель управления{% endif %}</title>
-    <script src="https://cdn.tailwindcss.com"></script>
-    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
-    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0-beta3/css/all.min.css">
-    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
-    <style>
-        :root {
-            --primary: #d97706;
-            --primary-dark: #b45309;
-            --dark: #1e1b18;
-            --light: #f8fafc;
+import os
+import logging
+import sqlite3
+import asyncio
+from aiohttp import web
+from aiohttp_session import setup, get_session, SimpleCookieStorage
+from jinja2 import Environment, FileSystemLoader
+from aiogram import Bot, Dispatcher
+from aiogram.webhook.aiohttp_server import SimpleRequestHandler, setup_application
+from aiogram.filters import Command
+
+# Настройка логирования
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
+
+# Настройка Jinja2
+template_env = Environment(loader=FileSystemLoader('templates'))
+
+# Инициализация базы данных SQLite
+def init_db():
+    conn = sqlite3.connect('database.db')
+    c = conn.cursor()
+    c.execute('''CREATE TABLE IF NOT EXISTS admins (
+        admin_id TEXT PRIMARY KEY,
+        password TEXT,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    )''')
+    # Добавление тестового админа (замените на реальные данные)
+    c.execute("INSERT OR IGNORE INTO admins (admin_id, password) VALUES (?, ?)",
+              ("5033892308", "admin123"))
+    conn.commit()
+    conn.close()
+    logger.info("Админ 5033892308 успешно добавлен в базу данных")
+
+# Инициализация бота и диспетчера
+BOT_TOKEN = os.getenv('BOT_TOKEN', 'your-bot-token')  # Укажите токен в переменной окружения
+WEBHOOK_PATH = '/webhook'
+WEBHOOK_URL = os.getenv('WEBHOOK_URL', 'https://your-render-app.onrender.com') + WEBHOOK_PATH
+bot = Bot(token=BOT_TOKEN)
+dp = Dispatcher()
+
+# Создание приложения aiohttp
+app = web.Application()
+
+# Настройка сессий
+setup(app, SimpleCookieStorage())
+
+# Функция для получения флэш-сообщений
+async def get_flashed_messages(request):
+    session = await get_session(request)
+    messages = session.pop('flashed_messages', [])
+    return messages
+
+# Проверка авторизации
+async def check_auth(request):
+    session = await get_session(request)
+    admin_id = session.get('admin_id')
+    if not admin_id:
+        session.setdefault('flashed_messages', []).append('Требуется авторизация!')
+        raise web.HTTPFound('/')
+    return admin_id
+
+# Обработчик маршрута для страницы логина
+async def admin_panel(request):
+    template = template_env.get_template('admin_login.html')
+    logger.info("Обращение к маршруту /")
+    return web.Response(
+        text=template.render(
+            login_page=True,
+            get_flashed_messages=lambda: get_flashed_messages(request)
+        ),
+        content_type='text/html'
+    )
+
+# Обработчик логина
+async def login_handler(request):
+    session = await get_session(request)
+    data = await request.post()
+    admin_id = data.get('admin_id')
+    password = data.get('password')
+    
+    # Проверка в базе данных
+    conn = sqlite3.connect('database.db')
+    c = conn.cursor()
+    c.execute("SELECT password FROM admins WHERE admin_id = ?", (admin_id,))
+    result = c.fetchone()
+    conn.close()
+    
+    if result and result[0] == password:  # В продакшене используйте хеширование паролей
+        session['admin_id'] = admin_id
+        session.setdefault('flashed_messages', []).append('Успешный вход!')
+        raise web.HTTPFound(f'/admin/{admin_id}')
+    else:
+        session.setdefault('flashed_messages', []).append('Неверный ID или пароль!')
+        raise web.HTTPFound('/')
+
+# Обработчик админ-панели
+async def admin_dashboard(request):
+    admin_id = await check_auth(request)
+    template = template_env.get_template('admin_dashboard.html')
+    logger.info(f"Обращение к маршруту /admin/{admin_id}")
+    return web.Response(
+        text=template.render(
+            dashboard=True,
+            admin_id=admin_id,
+            get_flashed_messages=lambda: get_flashed_messages(request)
+        ),
+        content_type='text/html'
+    )
+
+# Обработчик выхода
+async def logout_handler(request):
+    session = await get_session(request)
+    session.clear()
+    session.setdefault('flashed_messages', []).append('Вы вышли из системы!')
+    raise web.HTTPFound('/')
+
+# Обработчик редактирования приветственного сообщения
+async def edit_welcome(request):
+    admin_id = await check_auth(request)
+    
+    if request.method == 'POST':
+        data = await request.post()
+        welcome_message = data.get('welcome_message')
+        # Сохранение в базе данных (пример)
+        conn = sqlite3.connect('database.db')
+        c = conn.cursor()
+        c.execute("UPDATE settings SET welcome_message = ? WHERE id = 1",
+                  (welcome_message,))
+        conn.commit()
+        conn.close()
+        session = await get_session(request)
+        session.setdefault('flashed_messages', []).append('Приветственное сообщение обновлено!')
+        raise web.HTTPFound(f'/admin/{admin_id}')
+    
+    # Получение текущего сообщения (пример)
+    conn = sqlite3.connect('database.db')
+    c = conn.cursor()
+    c.execute("SELECT welcome_message FROM settings WHERE id = 1")
+    current_msg = c.fetchone()[0] if c.fetchone() else "Текущее приветственное сообщение"
+    conn.close()
+    
+    template = template_env.get_template('admin_dashboard.html')
+    return web.Response(
+        text=template.render(
+            edit_welcome=True,
+            admin_id=admin_id,
+            current_msg=current_msg,
+            get_flashed_messages=lambda: get_flashed_messages(request)
+        ),
+        content_type='text/html'
+    )
+
+# Обработчик рассылки (заглушка)
+async def broadcast(request):
+    admin_id = await check_auth(request)
+    session = await get_session(request)
+    
+    if request.method == 'POST':
+        data = await request.post()
+        broadcast_message = data.get('broadcast_message')
+        # Здесь должна быть логика рассылки через bot.send_message
+        session.setdefault('flashed_messages', []).append('Рассылка отправлена!')
+        raise web.HTTPFound(f'/admin/{admin_id}')
+    
+    template = template_env.get_template('admin_dashboard.html')
+    return web.Response(
+        text=template.render(
+            broadcast=True,
+            admin_id=admin_id,
+            get_flashed_messages=lambda: get_flashed_messages(request)
+        ),
+        content_type='text/html'
+    )
+
+# Обработчик личных сообщений (заглушка)
+async def private_message(request):
+    admin_id = await check_auth(request)
+    session = await get_session(request)
+    
+    if request.method == 'POST':
+        data = await request.post()
+        target_user = data.get('target_user')
+        private_message = data.get('private_message')
+        # Отправка сообщения через bot.send_message
+        try:
+            await bot.send_message(chat_id=target_user, text=private_message)
+            session.setdefault('flashed_messages', []).append('Сообщение отправлено!')
+        except Exception as e:
+            session.setdefault('flashed_messages', []).append(f'Ошибка отправки: {str(e)}')
+        raise web.HTTPFound(f'/admin/{admin_id}')
+    
+    template = template_env.get_template('admin_dashboard.html')
+    return web.Response(
+        text=template.render(
+            private_message=True,
+            admin_id=admin_id,
+            get_flashed_messages=lambda: get_flashed_messages(request)
+        ),
+        content_type='text/html'
+    )
+
+# Обработчик статистики (заглушка)
+async def user_stats(request):
+    admin_id = await check_auth(request)
+    template = template_env.get_template('admin_dashboard.html')
+    # Пример данных статистики
+    stats = {
+        'total_users': 100,
+        'new_today': 5,
+        'new_week': 20,
+        'new_month': 50,
+        'total_subscribers': 80,
+        'subscribed_today': 3,
+        'unsubscribed_today': 1,
+        'channel_subscribers': 75,
+        'chart_data': {
+            'labels': ['Jan', 'Feb', 'Mar'],
+            'datasets': [{'label': 'New Users', 'data': [10, 20, 30]}]
         }
-        body {
-            font-family: 'Inter', sans-serif;
-            background-color: #fef3c7;
-            color: #1e293b;
-        }
-        .sidebar {
-            background: linear-gradient(180deg, var(--dark), #292524);
-            box-shadow: 4hyper://render.com/docs/web-services#port-bindingpx rgba(0, 0, 0, 0.1);
-        }
-        .card {
-            background: white;
-            box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1), 0 2px 4px -1px rgba(0, 0, 0, 0.06);
-            transition: all 0.3s ease;
-        }
-        .card:hover {
-            transform: translateY(-2px);
-            box-shadow: 0 10px 15px -3px rgba(0, 0, 0, 0.1), 0 4px 6px -2px rgba(0, 0, 0, 0.05);
-        }
-        .btn-primary {
-            background-color: var(--primary);
-            transition: all 0.3s ease;
-        }
-        .btn-primary:hover {
-            background-color: var(--primary-dark);
-            transform: translateY(-1px);
-        }
-        .nav-link {
-            transition: all 0.2s ease;
-        }
-        .nav-link:hover {
-            background-color: rgba(255, 255, 255, 0.1);
-            transform: translateX(3px);
-        }
-        .active {
-            background-color: var(--primary);
-        }
-        .form-control:focus {
-            border-color: var(--primary);
-            box-shadow: 0 0 0 3px rgba(217, 119, 6, 0.2);
-        }
-    </style>
-</head>
-<body class="min-h-screen">
-    {% if login_page %}
-    <div class="flex items-center justify-center p-4 min-h-screen">
-        <div class="bg-white rounded-2xl shadow-xl p-8 w-full max-w-md">
-            <div class="flex justify-center mb-8">
-                <img src="https://i.postimg.cc/v8p7tw4Y/image.png" alt="LegerisChatManager" class="h-20 w-20 rounded-full">
-            </div>
-            <h1 class="text-3xl font-bold text-center text-amber-800 mb-2">LegerisChatManager</h1>
-            <p class="text-center text-gray-600 mb-8">Административная панель</p>
-            {% with messages = get_flashed_messages() %}
-                {% if messages %}
-                    <div class="mb-6 p-4 bg-red-100 border-l-4 border-red-500 text-red-700 rounded-md">
-                        {% for message in messages %}
-                            <p>{{ message }}</p>
-                        {% endfor %}
-                    </div>
-                {% endif %}
-            {% endwith %}
-            <form method="POST" class="space-y-6">
-                <div>
-                    <label for="admin_id" class="block text-sm font-medium text-gray-700 mb-1">ID администратора</label>
-                    <input type="text" name="admin_id" id="admin_id" class="w-full px-4 py-3 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-amber-500" placeholder="Введите ваш ID" required>
-                </div>
-                <div>
-                    <label for="password" class="block text-sm font-medium text-gray-700 mb-1">Пароль</label>
-                    <input type="password" name="password" id="password" class="w-full px-4 py-3 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-amber-500" placeholder="Введите пароль" required>
-                </div>
-                <button type="submit" class="btn-primary w-full text-white py-3 px-4 rounded-lg font-medium shadow-md hover:shadow-lg">
-                    Войти
-                </button>
-            </form>
-        </div>
-    </div>
-    {% else %}
-    <div class="flex h-screen">
-        <!-- Боковая панель -->
-        <div class="sidebar w-64 flex-shrink-0 text-white p-4 hidden md:block">
-            <div class="flex items-center justify-center mb-8 pt-4">
-                <h1 class="text-2xl font-bold">Legeris<span class="text-amber-400">Chat</span></h1>
-            </div>
-            <div class="mb-10 text-center">
-                <img src="https://i.postimg.cc/v8p7tw4Y/image.png" alt="Admin Avatar" class="w-20 h-20 rounded-full mx-auto mb-3 border-2 border-amber-500">
-                <h3 class="font-medium">Администратор</h3>
-                <p class="text-xs text-amber-200">ID: {{ admin_id }}</p>
-            </div>
-            <nav class="space-y-1">
-                <a href="/admin/{{ admin_id }}" class="block nav-link py-3 px-4 rounded-lg {{ 'active' if dashboard else '' }}">
-                    <i class="fas fa-tachometer-alt mr-3"></i> Главная
-                </a>
-                <a href="/admin/{{ admin_id }}/edit_welcome" class="block nav-link py-3 px-4 rounded-lg {{ 'active' if edit_welcome else '' }}">
-                    <i class="fas fa-comment-alt mr-3"></i> Приветствие
-                </a>
-                <a href="/admin/{{ admin_id }}/broadcast" class="block nav-link py-3 px-4 rounded-lg {{ 'active' if broadcast else '' }}">
-                    <i class="fas fa-bullhorn mr-3"></i> Рассылка
-                </a>
-                <a href="/admin/{{ admin_id }}/private_message" class="block nav-link py-3 px-4 rounded-lg {{ 'active' if private_message else '' }}">
-                    <i class="fas fa-envelope mr-3"></i> Личные сообщения
-                </a>
-                <a href="/admin/{{ admin_id }}/user_stats" class="block nav-link py-3 px-4 rounded-lg {{ 'active' if stats_page else '' }}">
-                    <i class="fas fa-chart-bar mr-3"></i> Статистика
-                </a>
-                <a href="/admin/{{ admin_id }}/user_management" class="block nav-link py-3 px-4 rounded-lg {{ 'active' if user_management else '' }}">
-                    <i class="fas fa-users mr-3"></i> Пользователи
-                </a>
-                <a href="/admin/{{ admin_id }}/activity_logs" class="block nav-link py-3 px-4 rounded-lg {{ 'active' if activity_logs else '' }}">
-                    <i class="fas fa-history mr-3"></i> Логи
-                </a>
-                <a href="/logout?admin_id={{ admin_id }}" class="block nav-link py-3 px-4 rounded-lg text-red-300 hover:text-red-100">
-                    <i class="fas fa-sign-out-alt mr-3"></i> Выход
-                </a>
-            </nav>
-        </div>
-        <!-- Основной контент -->
-        <div class="flex-1 overflow-y-auto bg-amber-50 p-6 md:p-8">
-            <div class="max-w-4xl mx-auto">
-                {% with messages = get_flashed_messages() %}
-                    {% if messages %}
-                        <div class="mb-6 p-4 bg-green-100 border-l-4 border-green-500 text-green-700 rounded-md shadow-sm">
-                            {% for message in messages %}
-                                <p>{{ message }}</p>
-                            {% endfor %}
-                        </div>
-                    {% endif %}
-                {% endwith %}
-                {% if dashboard %}
-                <div class="mb-8">
-                    <h2 class="text-2xl md:text-3xl font-bold text-amber-900">Панель управления</h2>
-                    <p class="text-amber-700 mt-2">Управление ботом и пользователями</p>
-                </div>
-                <div class="grid grid-cols-1 md:grid-cols-3 gap-6">
-                    <a href="/admin/{{ admin_id }}/edit_welcome" class="card rounded-lg p-6 hover:border-amber-300 border border-transparent">
-                        <div class="flex items-center">
-                            <div class="p-3 rounded-full bg-amber-100 text-amber-600 mr-4">
-                                <i class="fas fa-comment-alt text-xl"></i>
-                            </div>
-                            <div>
-                                <h3 class="font-semibold text-lg text-gray-800">Приветственное сообщение</h3>
-                                <p class="text-gray-600 text-sm mt-1">Настройте сообщение для новых пользователей</p>
-                            </div>
-                        </div>
-                    </a>
-                    <a href="/admin/{{ admin_id }}/broadcast" class="card rounded-lg p-6 hover:border-amber-300 border border-transparent">
-                        <div class="flex items-center">
-                            <div class="p-3 rounded-full bg-amber-100 text-amber-600 mr-4">
-                                <i class="fas fa-bullhorn text-xl"></i>
-                            </div>
-                            <div>
-                                <h3 class="font-semibold text-lg text-gray-800">Рассылка</h3>
-                                <p class="text-gray-600 text-sm mt-1">Отправьте сообщение всем пользователям</p>
-                            </div>
-                        </div>
-                    </a>
-                    <a href="/admin/{{ admin_id }}/private_message" class="card rounded-lg p-6 hover:border-amber-300 border border-transparent">
-                        <div class="flex items-center">
-                            <div class="p-3 rounded-full bg-amber-100 text-amber-600 mr-4">
-                                <i class="fas fa-envelope text-xl"></i>
-                            </div>
-                            <div>
-                                <h3 class="font-semibold text-lg text-gray-800">Личные сообщения</h3>
-                                <p class="text-gray-600 text-sm mt-1">Отправьте сообщение конкретному пользователю</p>
-                            </div>
-                        </div>
-                    </a>
-                    <a href="/admin/{{ admin_id }}/user_stats" class="card rounded-lg p-6 hover:border-amber-300 border border-transparent">
-                        <div class="flex items-center">
-                            <div class="p-3 rounded-full bg-amber-100 text-amber-600 mr-4">
-                                <i class="fas fa-chart-bar text-xl"></i>
-                            </div>
-                            <div>
-                                <h3 class="font-semibold text-lg text-gray-800">Статистика</h3>
-                                <p class="text-gray-600 text-sm mt-1">Просмотр аналитики и статистики</p>
-                            </div>
-                        </div>
-                    </a>
-                    <a href="/admin/{{ admin_id }}/user_management" class="card rounded-lg p-6 hover:border-amber-300 border border-transparent">
-                        <div class="flex items-center">
-                            <div class="p-3 rounded-full bg-amber-100 text-amber-600 mr-4">
-                                <i class="fas fa-users text-xl"></i>
-                            </div>
-                            <div>
-                                <h3 class="font-semibold text-lg text-gray-800">Пользователи</h3>
-                                <p class="text-gray-600 text-sm mt-1">Управление пользователями</p>
-                            </div>
-                        </div>
-                    </a>
-                    <a href="/admin/{{ admin_id }}/activity_logs" class="card rounded-lg p-6 hover:border-amber-300 border border-transparent">
-                        <div class="flex items-center">
-                            <div class="p-3 rounded-full bg-amber-100 text-amber-600 mr-4">
-                                <i class="fas fa-history text-xl"></i>
-                            </div>
-                            <div>
-                                <h3 class="font-semibold text-lg text-gray-800">Логи активности</h3>
-                                <p class="text-gray-600 text-sm mt-1">Просмотр действий администраторов</p>
-                            </div>
-                        </div>
-                    </a>
-                </div>
-                {% elif edit_welcome %}
-                <div class="mb-8">
-                    <h2 class="text-2xl md:text-3xl font-bold text-amber-900">Редактирование приветствия</h2>
-                    <p class="text-amber-700 mt-2">Настройте приветственное сообщение для новых пользователей</p>
-                </div>
-                <div class="card rounded-lg p-6 mb-6">
-                    <form method="POST" action="/admin/{{ admin_id }}/edit_welcome">
-                        <div class="mb-6">
-                            <label for="welcome_message" class="block text-sm font-medium text-gray-700 mb-2">Приветственное сообщение</label>
-                            <textarea name="welcome_message" id="welcome_message" class="w-full px-4 py-3 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-amber-500" rows="6">{{ current_msg }}</textarea>
-                            <p class="mt-2 text-sm text-gray-500">Используйте HTML-разметку для форматирования</p>
-                        </div>
-                        <button type="submit" class="btn-primary text-white px-6 py-3 rounded-lg font-medium shadow-md">Сохранить изменения</button>
-                    </form>
-                </div>
-                {% elif broadcast %}
-                <div class="mb-8">
-                    <h2 class="text-2xl md:text-3xl font-bold text-amber-900">Рассылка сообщения</h2>
-                    <p class="text-amber-700 mt-2">Отправьте сообщение всем пользователям</p>
-                </div>
-                <div class="card rounded-lg p-6 mb-6">
-                    <form method="POST" action="/admin/{{ admin_id }}/broadcast">
-                        <div class="mb-6">
-                            <label for="broadcast_message" class="block text-sm font-medium text-gray-700 mb-2">Сообщение для рассылки</label>
-                            <textarea name="broadcast_message" id="broadcast_message" class="w-full px-4 py-3 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-amber-500" rows="6" placeholder="Введите сообщение для всех пользователей"></textarea>
-                        </div>
-                        <button type="submit" class="btn-primary text-white px-6 py-3 rounded-lg font-medium shadow-md">Отправить всем пользователям</button>
-                    </form>
-                </div>
-                {% elif private_message %}
-                <div class="mb-8">
-                    <h2 class="text-2xl md:text-3xl font-bold text-amber-900">Личное сообщение</h2>
-                    <p class="text-amber-700 mt-2">Отправьте сообщение конкретному пользователю</p>
-                </div>
-                <div class="card rounded-lg p-6 mb-6">
-                    <form method="POST" action="/admin/{{ admin_id }}/private_message">
-                        <div class="mb-6">
-                            <label for="target_user" class="block text-sm font-medium text-gray-700 mb-2">ID пользователя</label>
-                            <input type="text" name="target_user" id="target_user" class="w-full px-4 py-3 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-amber-500" placeholder="Введите ID пользователя">
-                        </div>
-                        <div class="mb-6">
-                            <label for="private_message" class="block text-sm font-medium text-gray-700 mb-2">Сообщение</label>
-                            <textarea name="private_message" id="private_message" class="w-full px-4 py-3 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-amber-500" rows="6" placeholder="Введите сообщение"></textarea>
-                        </div>
-                        <button type="submit" class="btn-primary text-white px-6 py-3 rounded-lg font-medium shadow-md">Отправить сообщение</button>
-                    </form>
-                </div>
-                {% elif stats_page %}
-                <div class="mb-8">
-                    <h2 class="text-2xl md:text-3xl font-bold text-amber-900">Статистика</h2>
-                    <p class="text-amber-700 mt-2">Аналитика пользователей и канала</p>
-                </div>
-                <div class="card rounded-lg p-6 mb-6">
-                    <h3 class="text-xl font-semibold text-gray-800 mb-4">Статистика пользователей</h3>
-                    <div class="bg-gray-50 p-4 rounded-lg">
-                        <div class="grid grid-cols-1 md:grid-cols-4 gap-4">
-                            <div class="bg-white p-4 rounded-lg shadow">
-                                <h4 class="text-lg font-medium text-gray-700 mb-2">Всего пользователей</h4>
-                                <p class="text-3xl font-bold text-amber-600">{{ stats.total_users }}</p>
-                            </div>
-                            <div class="bg-white p-4 rounded-lg shadow">
-                                <h4 class="text-lg font-medium text-gray-700 mb-2">Новых сегодня</h4>
-                                <p class="text-3xl font-bold text-amber-600">{{ stats.new_today }}</p>
-                            </div>
-                            <div class="bg-white p-4 rounded-lg shadow">
-                                <h4 class="text-lg font-medium text-gray-700 mb-2">Новых за неделю</h4>
-                                <p class="text-3xl font-bold text-amber-600">{{ stats.new_week }}</p>
-                            </div>
-                            <div class="bg-white p-4 rounded-lg shadow">
-                                <h4 class="text-lg font-medium text-gray-700 mb-2">Новых за месяц</h4>
-                                <p class="text-3xl font-bold text-amber-600">{{ stats.new_month }}</p>
-                            </div>
-                        </div>
-                    </div>
-                </div>
-                <div class="card rounded-lg p-6 mb-6">
-                    <h3 class="text-xl font-semibold text-gray-800 mb-4">Статистика канала</h3>
-                    <div class="bg-gray-50 p-4 rounded-lg">
-                        <div class="grid grid-cols-1 md:grid-cols-3 gap-4">
-                            <div class="bg-white p-4 rounded-lg shadow">
-                                <h4 class="text-lg font-medium text-gray-700 mb-2">Всего подписчиков</h4>
-                                <p class="text-3xl font-bold text-amber-600">{{ stats.total_subscribers }}</p>
-                            </div>
-                            <div class="bg-white p-4 rounded-lg shadow">
-                                <h4 class="text-lg font-medium text-gray-700 mb-2">Подписалось сегодня</h4>
-                                <p class="text-3xl font-bold text-amber-600">{{ stats.subscribed_today }}</p>
-                            </div>
-                            <div class="bg-white p-4 rounded-lg shadow">
-                                <h4 class="text-lg font-medium text-gray-700 mb-2">Отписалось сегодня</h4>
-                                <p class="text-3xl font-bold text-amber-600">{{ stats.unsubscribed_today }}</p>
-                            </div>
-                            <div class="bg-white p-4 rounded-lg shadow">
-                                <h4 class="text-lg font-medium text-gray-700 mb-2">Подписчиков в канале</h4>
-                                <p class="text-3xl font-bold text-amber-600">{{ stats.channel_subscribers }}</p>
-                            </div>
-                        </div>
-                    </div>
-                </div>
-                <div class="card rounded-lg p-6 mb-6">
-                    <h3 class="text-xl font-semibold text-gray-800 mb-4">График новых пользователей</h3>
-                    <canvas id="userChart" class="w-full"></canvas>
-                </div>
-                <script>
-                    document.addEventListener('DOMContentLoaded', function() {
-                        const ctx = document.getElementById('userChart').getContext('2d');
-                        const chartData = {
-                            labels: {{ stats.chart_data.labels|tojson|safe }},
-                            datasets: {{ stats.chart_data.datasets|tojson|safe }}
-                        };
-                        new Chart(ctx, {
-                            type: 'bar',
-                            data: chartData,
-                            options: {
-                                scales: {
-                                    y: {
-                                        beginAtZero: true
-                                    }
-                                }
-                            }
-                        });
-                    });
-                </script>
-                {% elif user_management %}
-                <div class="mb-8">
-                    <h2 class="text-2xl md:text-3xl font-bold text-amber-900">Управление пользователями</h2>
-                    <p class="text-amber-700 mt-2">Просмотр и управление пользователями</p>
-                </div>
-                <div class="card rounded-lg p-6 mb-6">
-                    <h3 class="text-xl font-semibold text-gray-800 mb-4">Список пользователей</h3>
-                    <!-- Форма поиска и фильтров -->
-                    <form method="get" action="/admin/{{ admin_id }}/user_management" class="mb-6">
-                        <div class="grid grid-cols-1 md:grid-cols-4 gap-4">
-                            <div>
-                                <label for="search" class="block text-sm font-medium text-gray-700 mb-1">Поиск (ID, имя, username)</label>
-                                <input type="text" id="search" name="search" value="{{ search_query }}" class="w-full px-4 py-3 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-amber-500">
-                            </div>
-                            <div>
-                                <label for="subscribed" class="block text-sm font-medium text-gray-700 mb-1">Подписан</label>
-                                <select id="subscribed" name="subscribed" class="w-full px-4 py-3 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-amber-500">
-                                    <option value="">Все</option>
-                                    <option value="yes" {% if filter_subscribed == 'yes' %}selected{% endif %}>Да</option>
-                                    <option value="no" {% if filter_subscribed == 'no' %}selected{% endif %}>Нет</option>
-                                </select>
-                            </div>
-                            <div>
-                                <label for="admin" class="block text-sm font-medium text-gray-700 mb-1">Админ</label>
-                                <select id="admin" name="admin" class="w-full px-4 py-3 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-amber-500">
-                                    <option value="">Все</option>
-                                    <option value="yes" {% if filter_admin == 'yes' %}selected{% endif %}>Да</option>
-                                    <option value="no" {% if filter_admin == 'no' %}selected{% endif %}>Нет</option>
-                                </select>
-                            </div>
-                            <div>
-                                <label for="banned" class="block text-sm font-medium text-gray-700 mb-1">Забанен</label>
-                                <select id="banned" name="banned" class="w-full px-4 py-3 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-amber-500">
-                                    <option value="">Все</option>
-                                    <option value="yes" {% if filter_banned == 'yes' %}selected{% endif %}>Да</option>
-                                    <option value="no" {% if filter_banned == 'no' %}selected{% endif %}>Нет</option>
-                                </select>
-                            </div>
-                        </div>
-                        <button type="submit" class="btn-primary text-white px-6 py-3 rounded-lg font-medium shadow-md mt-4">Применить фильтры</button>
-                    </form>
-                    <!-- Форма управления пользователями -->
-                    <form method="post" action="/admin/{{ admin_id }}/user_management">
-                        <div class="mb-4">
-                            <button type="submit" name="action" value="bulk_ban" class="btn-primary text-white px-6 py-3 rounded-lg font-medium shadow-md mr-2">Забанить выбранных</button>
-                            <button type="submit" name="action" value="bulk_unban" class="btn-primary text-white px-6 py-3 rounded-lg font-medium shadow-md">Разбанить выбранных</button>
-                        </div>
-                        <div class="overflow-x-auto">
-                            <table class="w-full text-left">
-                                <thead>
-                                    <tr class="bg-gray-100">
-                                        <th class="p-3"><input type="checkbox" id="select-all"></th>
-                                        <th class="p-3">ID</th>
-                                        <th class="p-3">Username</th>
-                                        <th class="p-3">Имя</th>
-                                        <th class="p-3">Дата регистрации</th>
-                                        <th class="p-3">Подписка</th>
-                                        <th class="p-3">Админ</th>
-                                        <th class="p-3">Статус</th>
-                                        <th class="p-3">Действия</th>
-                                    </tr>
-                                </thead>
-                                <tbody>
-                                    {% for user in users %}
-                                    <tr class="border-b">
-                                        <td class="p-3"><input type="checkbox" name="selected_users" value="{{ user[0] }}"></td>
-                                        <td class="p-3">{{ user[0] }}</td>
-                                        <td class="p-3">{{ user[1] or 'N/A' }}</td>
-                                        <td class="p-3">{{ (user[2] or '') + ' ' + (user[3] or '') }}</td>
-                                        <td class="p-3">{{ user[4] }}</td>
-                                        <td class="p-3">{{ 'Да' if user[5] else 'Нет' }}</td>
-                                        <td class="p-3">{{ 'Да' if user[6] else 'Нет' }}</td>
-                                        <td class="p-3">{{ 'Заблокирован' if user[7] else 'Активен' }}</td>
-                                        <td class="p-3">
-                                            <div class="flex space-x-2">
-                                                <form method="post" action="/admin/{{ admin_id }}/user_management" class="inline">
-                                                    <input type="hidden" name="user_id" value="{{ user[0] }}">
-                                                    {% if user[7] %}
-                                                    <button type="submit" name="action" value="unban" class="text-green-600 hover:text-green-800">Разблокировать</button>
-                                                    {% else %}
-                                                    <button type="submit" name="action" value="ban" class="text-red-600 hover:text-red-800">Заблокировать</button>
-                                                    {% endif %}
-                                                </form>
-                                                <form method="post" action="/admin/{{ admin_id }}/user_management" class="inline">
-                                                    <input type="hidden" name="user_id" value="{{ user[0] }}">
-                                                    {% if user[6] %}
-                                                    <button type="submit" name="action" value="remove_admin" class="text-blue-600 hover:text-blue-800">Убрать админа</button>
-                                                    {% else %}
-                                                    <button type="submit" name="action" value="make_admin" class="text-blue-600 hover:text-blue-800">Сделать админом</button>
-                                                    {% endif %}
-                                                </form>
-                                            </div>
-                                        </td>
-                                    </tr>
-                                    {% endfor %}
-                                </tbody>
-                            </table>
-                        </div>
-                    </form>
-                </div>
-                <script>
-                    document.getElementById('select-all').addEventListener('change', function(e) {
-                        const checkboxes = document.querySelectorAll('input[name="selected_users"]');
-                        checkboxes.forEach(cb => cb.checked = e.target.checked);
-                    });
-                </script>
-                {% elif activity_logs %}
-                <div class="mb-8">
-                    <h2 class="text-2xl md:text-3xl font-bold text-amber-900">Логи активности</h2>
-                    <p class="text-amber-700 mt-2">История действий администраторов</p>
-                </div>
-                <div class="card rounded-lg p-6 mb-6">
-                    <h3 class="text-xl font-semibold text-gray-800 mb-4">Последние действия</h3>
-                    <div class="overflow-x-auto">
-                        <table class="w-full text-left">
-                            <thead>
-                                <tr class="bg-gray-100">
-                                    <th class="p-3">ID</th>
-                                    <th class="p-3">Админ ID</th>
-                                    <th class="p-3">Действие</th>
-                                    <th class="p-3">Детали</th>
-                                    <th class="p-3">Время</th>
-                                </tr>
-                            </thead>
-                            <tbody>
-                                {% for log in logs %}
-                                <tr class="border-b">
-                                    <td class="p-3">{{ log[0] }}</td>
-                                    <td class="p-3">{{ log[1] }}</td>
-                                    <td class="p-3">{{ log[2] }}</td>
-                                    <td class="p-3">{{ log[3] }}</td>
-                                    <td class="p-3">{{ log[4] }}</td>
-                                </tr>
-                                {% endfor %}
-                            </tbody>
-                        </table>
-                    </div>
-                </div>
-                {% endif %}
-            </div>
-        </div>
-    </div>
-    {% endif %}
-    <script>(function(){function c(){var b=a.contentDocument||a.contentWindow.document;if(b){var d=b.createElement('script');d.innerHTML="window.__CF$cv$params={r:'93dad9c40a09bd34',t:'MTc0Njg5NDkzNS4wMDAwMDA='};var a=document.createElement('script');a.nonce='';a.src='/cdn-cgi/challenge-platform/scripts/jsd/main.js';document.getElementsByTagName('head')[0].appendChild(a);";b.getElementsByTagName('head')[0].appendChild(d)}}if(document.body){var a=document.createElement('iframe');a.height=1;a.width=1;a.style.position='absolute';a.style.top=0;a.style.left=0;a.style.border='none';a.style.visibility='hidden';document.body.appendChild(a);if('loading'!==document.readyState)c();else if(window.addEventListener)document.addEventListener('DOMContentLoaded',c);else{var e=document.onreadystatechange||function(){};document.onreadystatechange=function(b){e(b);'loading'!==document.readyState&&(document.onreadystatechange=e,c())}}}})();</script>
-</body>
-</html>
+    }
+    return web.Response(
+        text=template.render(
+            stats_page=True,
+            admin_id=admin_id,
+            stats=stats,
+            get_flashed_messages=lambda: get_flashed_messages(request)
+        ),
+        content_type='text/html'
+    )
+
+# Обработчик управления пользователями (за вверх)
+async def user_management(request):
+    admin_id = await check_auth(request)
+    session = await get_session(request)
+    
+    if request.method == 'POST':
+        data = await request.post()
+        action = data.get('action')
+        # Пример обработки действий
+        session.setdefault('flashed_messages', []).append(f'Действие {action} выполнено!')
+        raise web.HTTPFound(f'/admin/{admin_id}')
+    
+    # Пример данных пользователей
+    users = [
+        (123, '@user1', 'John', 'Doe', '2023-01-01', True, False, False),
+        (456, '@user2', 'Jane', 'Doe', '2023-02-01', False, True, True)
+    ]
+    template = template_env.get_template('admin_dashboard.html')
+    return web.Response(
+        text=template.render(
+            user_management=True,
+            admin_id=admin_id,
+            users=users,
+            search_query='',
+            filter_subscribed='',
+            filter_admin='',
+            filter_banned='',
+            get_flashed_messages=lambda: get_flashed_messages(request)
+        ),
+        content_type='text/html'
+    )
+
+# Обработчик логов активности (заглушка)
+async def activity_logs(request):
+    admin_id = await check_auth(request)
+    # Пример данных логов
+    logs = [
+        (1, admin_id, 'login', 'Logged in', '2023-05-10 12:00:00'),
+        (2, admin_id, 'update_welcome', 'Updated welcome message', '2023-05-10 12:01:00')
+    ]
+    template = template_env.get_template('admin_dashboard.html')
+    return web.Response(
+        text=template.render(
+            activity_logs=True,
+            admin_id=admin_id,
+            logs=logs,
+            get_flashed_messages=lambda: get_flashed_messages(request)
+        ),
+        content_type='text/html'
+    )
+
+# Пример Telegram-обработчика
+@dp.message(Command('start'))
+async def cmd_start(message):
+    await message.answer("Привет! Это ваш бот.")
+
+# Настройка вебхука
+async def on_startup():
+    logger.info("Установка вебхука...")
+    webhook = await bot.get_webhook_info()
+    if webhook.url != WEBHOOK_URL:
+        await bot.set_webhook(url=WEBHOOK_URL)
+        logger.info("Вебхук установлен")
+    else:
+        logger.info("Вебхук уже установлен")
+    init_db()  # Инициализация базы данных при старте
+
+async def on_shutdown():
+    logger.info("Остановка приложения...")
+    await bot.delete_webhook()
+    await bot.session.close()
+
+# Добавление маршрутов
+app.router.add_get('/', admin_panel)
+app.router.add_post('/', login_handler)
+app.router.add_get('/admin/{admin_id}', admin_dashboard)
+app.router.add_get('/logout', logout_handler)
+app.router.add_route('*', '/admin/{admin_id}/edit_welcome', edit_welcome)
+app.router.add_route('*', '/admin/{admin_id}/broadcast', broadcast)
+app.router.add_route('*', '/admin/{admin_id}/private_message', private_message)
+app.router.add_route('*', '/admin/{admin_id}/user_stats', user_stats)
+app.router.add_route('*', '/admin/{admin_id}/user_management', user_management)
+app.router.add_route('*', '/admin/{admin_id}/activity_logs', activity_logs)
+
+# Настройка aiogram с aiohttp
+request_handler = SimpleRequestHandler(dispatcher=dp, bot=bot)
+request_handler.register(app, path=WEBHOOK_PATH)
+setup_application(app, dp, bot=bot)
+
+# Регистрация хуков жизненного цикла
+app.on_startup.append(on_startup)
+app.on_shutdown.append(on_shutdown)
+
+# Запуск приложения
+if __name__ == '__main__':
+    port = int(os.getenv('PORT', 8080))  # Используем PORT из окружения Render
+    web.run_app(app, port=port)
