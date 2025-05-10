@@ -4,11 +4,7 @@ import sqlite3
 from datetime import datetime, timedelta
 from flask import Flask, render_template, request, redirect, url_for, flash, session
 import os
-
-try:
-    from aiogram.client.default import DefaultBotProperties  # Попытка импорта для 3.4.1
-except ImportError:
-    from aiogram.types import DefaultBotProperties  # Резервный импорт на случай изменения структуры
+import threading
 
 from aiogram import Bot, Dispatcher, types
 from aiogram.fsm.storage.memory import MemoryStorage
@@ -28,7 +24,7 @@ app.config['PERMANENT_SESSION_LIFETIME'] = 3600
 API_TOKEN = '7731278147:AAGNBi8Td-kSWr0Hhxdh0r46fXKzVsI0S2w'
 CHANNEL_ID = '-1002587647993'
 CHANNEL_LINK = 'https://t.me/+KZeOjH5orpRiNjgy'
-bot = Bot(token=API_TOKEN, default=DefaultBotProperties(parse_mode=ParseMode.HTML))
+bot = Bot(token=API_TOKEN, parse_mode=ParseMode.HTML)  # Убрали DefaultBotProperties
 storage = MemoryStorage()
 dp = Dispatcher(bot=bot, storage=storage)
 
@@ -480,7 +476,6 @@ def start_bot():
         loop.close()
 
 if __name__ == '__main__':
-    import threading
     bot_thread = threading.Thread(target=start_bot, daemon=True)
     bot_thread.start()
     app.run(host='0.0.0.0', port=int(os.getenv('PORT', 5000)))
