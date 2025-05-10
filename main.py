@@ -31,10 +31,8 @@ def init_db():
             id INTEGER PRIMARY KEY,
             welcome_message TEXT
         )''')
-        # Добавление тестового админа
         c.execute("INSERT OR IGNORE INTO admins (admin_id, password) VALUES (?, ?)",
                   ("5033892308", "LegerisKEY-23489610917034123480152398"))
-        # Добавление начального приветственного сообщения
         c.execute("INSERT OR IGNORE INTO settings (id, welcome_message) VALUES (?, ?)",
                   (1, "Добро пожаловать в бот!"))
         conn.commit()
@@ -85,10 +83,11 @@ async def admin_panel(request):
     try:
         template = template_env.get_template('admin_login.html')
         logger.info("Обращение к маршруту /")
+        flashed_messages = await get_flashed_messages(request)
         return web.Response(
             text=template.render(
                 login_page=True,
-                get_flashed_messages=lambda: get_flashed_messages(request)
+                flashed_messages=flashed_messages
             ),
             content_type='text/html'
         )
@@ -127,11 +126,12 @@ async def admin_dashboard(request):
         admin_id = await check_auth(request)
         template = template_env.get_template('admin_dashboard.html')
         logger.info(f"Обращение к маршруту /admin/{admin_id}")
+        flashed_messages = await get_flashed_messages(request)
         return web.Response(
             text=template.render(
                 dashboard=True,
                 admin_id=admin_id,
-                get_flashed_messages=lambda: get_flashed_messages(request)
+                flashed_messages=flashed_messages
             ),
             content_type='text/html'
         )
@@ -176,12 +176,13 @@ async def edit_welcome(request):
         conn.close()
         
         template = template_env.get_template('admin_dashboard.html')
+        flashed_messages = await get_flashed_messages(request)
         return web.Response(
             text=template.render(
                 edit_welcome=True,
                 admin_id=admin_id,
                 current_msg=current_msg,
-                get_flashed_messages=lambda: get_flashed_messages(request)
+                flashed_messages=flashed_messages
             ),
             content_type='text/html'
         )
@@ -202,11 +203,12 @@ async def broadcast(request):
             raise web.HTTPFound(f'/admin/{admin_id}')
         
         template = template_env.get_template('admin_dashboard.html')
+        flashed_messages = await get_flashed_messages(request)
         return web.Response(
             text=template.render(
                 broadcast=True,
                 admin_id=admin_id,
-                get_flashed_messages=lambda: get_flashed_messages(request)
+                flashed_messages=flashed_messages
             ),
             content_type='text/html'
         )
@@ -232,11 +234,12 @@ async def private_message(request):
             raise web.HTTPFound(f'/admin/{admin_id}')
         
         template = template_env.get_template('admin_dashboard.html')
+        flashed_messages = await get_flashed_messages(request)
         return web.Response(
             text=template.render(
                 private_message=True,
                 admin_id=admin_id,
-                get_flashed_messages=lambda: get_flashed_messages(request)
+                flashed_messages=flashed_messages
             ),
             content_type='text/html'
         )
@@ -263,12 +266,13 @@ async def user_stats(request):
                 'datasets': [{'label': 'New Users', 'data': [10, 20, 30]}]
             }
         }
+        flashed_messages = await get_flashed_messages(request)
         return web.Response(
             text=template.render(
                 stats_page=True,
                 admin_id=admin_id,
                 stats=stats,
-                get_flashed_messages=lambda: get_flashed_messages(request)
+                flashed_messages=flashed_messages
             ),
             content_type='text/html'
         )
@@ -293,6 +297,7 @@ async def user_management(request):
             (456, '@user2', 'Jane', 'Doe', '2023-02-01', False, True, True)
         ]
         template = template_env.get_template('admin_dashboard.html')
+        flashed_messages = await get_flashed_messages(request)
         return web.Response(
             text=template.render(
                 user_management=True,
@@ -302,7 +307,7 @@ async def user_management(request):
                 filter_subscribed='',
                 filter_admin='',
                 filter_banned='',
-                get_flashed_messages=lambda: get_flashed_messages(request)
+                flashed_messages=flashed_messages
             ),
             content_type='text/html'
         )
@@ -319,12 +324,13 @@ async def activity_logs(request):
             (2, admin_id, 'update_welcome', 'Updated welcome message', '2023-05-10 12:01:00')
         ]
         template = template_env.get_template('admin_dashboard.html')
+        flashed_messages = await get_flashed_messages(request)
         return web.Response(
             text=template.render(
                 activity_logs=True,
                 admin_id=admin_id,
                 logs=logs,
-                get_flashed_messages=lambda: get_flashed_messages(request)
+                flashed_messages=flashed_messages
             ),
             content_type='text/html'
         )
