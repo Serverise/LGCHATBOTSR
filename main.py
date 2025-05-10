@@ -1,8 +1,8 @@
 import logging
 import sqlite3
-from datetime import datetime
+from datetime import datetime, timedelta
 import asyncio
-from flask import Flask, request, render_template, redirect, url_for, flash, session, jsonify
+from flask import Flask, request, render_template, redirect, url_for, flash, session
 import os
 from aiogram import Bot, Dispatcher, types
 from aiogram.filters import CommandStart, StateFilter
@@ -13,7 +13,6 @@ from aiogram.enums import ParseMode, ChatMemberStatus
 from aiogram.client.default import DefaultBotProperties
 from aiogram.webhook.aiohttp_server import SimpleRequestHandler, setup_application
 from aiohttp import web
-import json
 
 # Настройка логирования
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -436,7 +435,9 @@ def broadcast(admin_id):
             failed = 0
             loop = asyncio.get_event_loop()
             for user in users:
-                if await loop.run_in_executor(None, lambda: asyncio.run(send_message_safe(user[0], broadcast_message))):
+                # Запускаем асинхронную функцию в синхронном контексте
+                result = loop.run_until_complete(send_message_safe(user[0], broadcast_message))
+                if result:
                     success += 1
                 else:
                     failed += 1
@@ -461,7 +462,8 @@ def private_message(admin_id):
             try:
                 target_user = int(target_user)
                 loop = asyncio.get_event_loop()
-                if await loop.run_in_executor(None, lambda: asyncio.run(send_message_safe(target_user, private_msg))):
+                result = loop.run_until_complete(send_message_safe(target_user, private_msg))
+                if result:
                     log_admin_action(admin_id, "private_message", f"Сообщение отправлено пользователю {target_user}: {private_msg}")
                     flash(f'Сообщение успешно отправлено пользователю {target_user}')
                 else:
@@ -501,11 +503,11 @@ def user_stats(admin_id):
         cursor.execute('SELECT COUNT(*) FROM users WHERE is_subscribed = 0 AND date(last_subscription_change) = date("now")')
         unsubscribed_today = cursor.fetchone()[0]
 
-        # Данные для графика
+        # Данные для графика (последние 7 дней)
         labels = []
         data = []
-        for i in range(7):
-            date = datetime.now().date().isoformat()
+        for i in range(6, -1, -1):  # От 6 дней назад до сегодня
+            date = (datetime.now().date() - timedelta(days=i)).isoformat()
             cursor.execute('SELECT COUNT(*) FROM users WHERE date(join_date) = ?', (date,))
             count = cursor.fetchone()[0]
             labels.append(date)
