@@ -3,11 +3,12 @@ import asyncio
 import sqlite3
 from datetime import datetime, timedelta
 from flask import Flask, render_template, request, redirect, url_for, flash, session
+import os
+
 from aiogram import Bot, Dispatcher, types
 from aiogram.fsm.storage.memory import MemoryStorage
-from aiogram.client.default import DefaultBotProperties
+from aiogram.client.default import DefaultBotProperties  # Проверяем импорт
 from aiogram.enums import ParseMode, ChatMemberStatus
-import os
 
 # Настройка логирования
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -330,7 +331,7 @@ def user_stats(admin_id):
         cursor.execute('SELECT COUNT(*) FROM users WHERE date(join_date) >= ?', (month_ago,))
         new_month = cursor.fetchone()[0]
         
-        chat = loop.run_until_complete(bot.get_chat(CHANNEL_ID))
+        chat = asyncio.run(bot.get_chat(CHANNEL_ID))
         total_subscribers = chat.members_count if hasattr(chat, 'members_count') else 0
         
         today = datetime.now().date()
@@ -459,19 +460,21 @@ async def on_startup():
     except Exception as e:
         logger.error(f"Ошибка инициализации базы данных: {str(e)}")
 
-async def main():
-    try:
-        await on_startup()
-        await dp.start_polling(bot, skip_updates=True)
-        app.run(host='0.0.0.0', port=int(os.getenv('PORT', 5000)))
-    except Exception as e:
-        logger.error(f"Ошибка главного цикла: {str(e)}")
-    finally:
-        conn.close()
+# Асинхронный запуск бота
+async def run_bot():
+    await on_startup()
+    await dp.start_polling(bot, skip_updates=True)
+
+# Запуск приложения с ботом в отдельном таске
+def run_app():
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
+    loop.run_until_complete(run_bot())
+    app.run(host='0.0.0.0', port=int(os.getenv('PORT', 5000)))
 
 if __name__ == '__main__':
     try:
-        asyncio.run(main())
+        run_app()
     except KeyboardInterrupt:
         conn.close()
         logger.info("Приложение завершено")
