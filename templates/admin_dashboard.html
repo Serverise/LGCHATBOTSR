@@ -66,15 +66,13 @@
             </div>
             <h1 class="text-3xl font-bold text-center text-amber-800 mb-2">LegerisChatManager</h1>
             <p class="text-center text-gray-600 mb-8">Административная панель</p>
-            {% with messages = get_flashed_messages() %}
-                {% if messages %}
-                    <div class="mb-6 p-4 bg-red-100 border-l-4 border-red-500 text-red-700 rounded-md">
-                        {% for message in messages %}
-                            <p>{{ message }}</p>
-                        {% endfor %}
-                    </div>
-                {% endif %}
-            {% endwith %}
+{% if flashed_messages %}
+    <div class="mb-6 p-4 bg-green-100 border-l-4 border-green-500 text-green-700 rounded-md shadow-sm">
+        {% for message in flashed_messages %}
+            <p>{{ message }}</p>
+        {% endfor %}
+    </div>
+{% endif %}
             <form method="POST" class="space-y-6">
                 <div>
                     <label for="admin_id" class="block text-sm font-medium text-gray-700 mb-1">ID администратора</label>
