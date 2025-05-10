@@ -6,7 +6,7 @@ from flask import Flask, render_template, request, redirect, url_for, flash, ses
 import os
 import threading
 
-from aiogram import Bot, Dispatcher, types, executor
+from aiogram import Bot, Dispatcher, types
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.types import ReplyKeyboardMarkup, InlineKeyboardMarkup, InlineKeyboardButton
@@ -97,7 +97,7 @@ async def send_message_safe(chat_id: int, text: str) -> bool:
         return False
 
 # Команда /start
-@dp.message_handler(commands=['start'])
+@dp.message(commands=['start'])
 async def start_command(message: types.Message):
     user_id = message.from_user.id
     username = message.from_user.username
@@ -120,6 +120,7 @@ async def start_command(message: types.Message):
     except Exception as e:
         logger.error(f"Ошибка базы данных при регистрации пользователя {user_id}: {str(e)}")
 
+    # Проверяем подписку
     if await check_subscription(user_id):
         try:
             cursor.execute('SELECT welcome_message FROM channels LIMIT 1')
@@ -132,30 +133,47 @@ async def start_command(message: types.Message):
     else:
         keyboard = ReplyKeyboardMarkup(resize_keyboard=True)
         keyboard.add(types.KeyboardButton("Подписаться на канал"))
+        # Проверяем, является ли пользователь админом
         cursor.execute('SELECT is_admin FROM users WHERE user_id = ?', (user_id,))
-        is_admin = cursor.fetchone()[0] if cursor.fetchone() else 0
+        result = cursor.fetchone()
+        is_admin = result[0] if result else 0
         if is_admin:
             keyboard.add(types.KeyboardButton("Панель управления"))
-        await message.answer("Пожалуйста, подпишитесь на канал, чтобы продолжить.", reply_markup=keyboard)
+        await message.answer(
+            f"Пожалуйста, подпишитесь на канал по ссылке: {CHANNEL_LINK}",
+            reply_markup=keyboard
+        )
 
 # Обработка кнопки "Подписаться на канал"
-@dp.message_handler(lambda message: message.text == "Подписаться на канал")
+@dp.message(lambda message: message.text == "Подписаться на канал")
 async def subscribe_channel(message: types.Message):
     user_id = message.from_user.id
     if await check_subscription(user_id):
         cursor.execute('SELECT welcome_message FROM channels LIMIT 1')
         welcome_msg = cursor.fetchone()
         msg = welcome_msg[0] if welcome_msg and welcome_msg[0] else "Спасибо за подписку! Вы добавлены в канал."
-        await message.answer(msg)
+        keyboard = ReplyKeyboardMarkup(resize_keyboard=True)
+        cursor.execute('SELECT is_admin FROM users WHERE user_id = ?', (user_id,))
+        result = cursor.fetchone()
+        is_admin = result[0] if result else 0
+        if is_admin:
+            keyboard.add(types.KeyboardButton("Панель управления"))
+        await message.answer(msg, reply_markup=keyboard)
     else:
-        await message.answer("Вы не подписаны на канал. Пожалуйста, подпишитесь и проверьте снова.", reply_markup=ReplyKeyboardMarkup(resize_keyboard=True).add(types.KeyboardButton("Подписаться на канал")))
+        keyboard = ReplyKeyboardMarkup(resize_keyboard=True)
+        keyboard.add(types.KeyboardButton("Подписаться на канал"))
+        await message.answer(
+            f"Вы не подписаны на канал. Пожалуйста, подпишитесь по ссылке: {CHANNEL_LINK}",
+            reply_markup=keyboard
+        )
 
 # Панель управления для админов
-@dp.message_handler(lambda message: message.text == "Панель управления")
+@dp.message(lambda message: message.text == "Панель управления")
 async def admin_panel(message: types.Message):
     user_id = message.from_user.id
     cursor.execute('SELECT is_admin FROM users WHERE user_id = ?', (user_id,))
-    is_admin = cursor.fetchone()[0] if cursor.fetchone() else 0
+    result = cursor.fetchone()
+    is_admin = result[0] if result else 0
     if not is_admin:
         await message.answer("У вас нет доступа к этой функции.")
         return
@@ -168,7 +186,7 @@ async def admin_panel(message: types.Message):
     await message.answer("Панель управления администратора:", reply_markup=keyboard)
 
 # Обработка инлайн кнопок
-@dp.callback_query_handler(lambda c: c.data in ["edit_welcome", "broadcast", "private_message", "user_stats"])
+@dp.callback_query(lambda c: c.data in ["edit_welcome", "broadcast", "private_message", "user_stats"])
 async def process_admin_buttons(callback_query: types.CallbackQuery, state: FSMContext):
     await bot.answer_callback_query(callback_query.id)
     user_id = callback_query.from_user.id
@@ -194,7 +212,7 @@ async def process_admin_buttons(callback_query: types.CallbackQuery, state: FSMC
         await bot.send_message(user_id, stats)
 
 # Обработка ввода приветственного сообщения
-@dp.message_handler(state=Form.welcome_message)
+@dp.message(state=Form.welcome_message)
 async def process_welcome_message(message: types.Message, state: FSMContext):
     welcome_msg = message.text
     cursor.execute('UPDATE channels SET welcome_message = ? WHERE rowid = 1', (welcome_msg,))
@@ -203,7 +221,7 @@ async def process_welcome_message(message: types.Message, state: FSMContext):
     await message.answer("Приветственное сообщение успешно обновлено!")
 
 # Обработка ввода сообщения для рассылки
-@dp.message_handler(state=Form.broadcast_message)
+@dp.message(state=Form.broadcast_message)
 async def process_broadcast(message: types.Message, state: FSMContext):
     broadcast_msg = message.text
     user_id = message.from_user.id
@@ -221,7 +239,7 @@ async def process_broadcast(message: types.Message, state: FSMContext):
     await message.answer(f"Рассылка завершена!\nУспешно: {success}\nНе удалось: {failed}")
 
 # Обработка выбора пользователя для личного сообщения
-@dp.message_handler(state=Form.select_user)
+@dp.message(state=Form.select_user)
 async def process_select_user(message: types.Message, state: FSMContext):
     try:
         target_user = int(message.text)
@@ -232,7 +250,7 @@ async def process_select_user(message: types.Message, state: FSMContext):
         await message.answer("Пожалуйста, введите корректный ID пользователя (только цифры).")
 
 # Обработка личного сообщения
-@dp.message_handler(state=Form.private_message)
+@dp.message(state=Form.private_message)
 async def process_private_message(message: types.Message, state: FSMContext):
     private_msg = message.text
     data = await state.get_data()
@@ -265,7 +283,7 @@ def init_db():
 async def start_bot():
     try:
         logger.info("Запуск бота...")
-        await dp.start_polling(dp, skip_updates=True)
+        await dp.start_polling(bot, skip_updates=True)
     except Exception as e:
         logger.error(f"Ошибка при запуске бота: {str(e)}")
 
