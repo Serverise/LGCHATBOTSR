@@ -10,6 +10,7 @@ from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.types import ReplyKeyboardMarkup, InlineKeyboardMarkup, InlineKeyboardButton
 from aiogram.enums import ParseMode, ChatMemberStatus
+from aiogram.client.default import DefaultBotProperties
 from aiogram.webhook.aiohttp_server import SimpleRequestHandler, setup_application
 from aiohttp import web
 
@@ -30,7 +31,8 @@ CHANNEL_LINK = 'https://t.me/+KZeOjH5orpRiNjgy'
 WEBHOOK_PATH = '/webhook'
 WEBHOOK_URL = f"https://lgchatbotsr.onrender.com{WEBHOOK_PATH}"
 
-bot = Bot(token=API_TOKEN, parse_mode=ParseMode.HTML)
+# Использование DefaultBotProperties для настройки parse_mode
+bot = Bot(token=API_TOKEN, default=DefaultBotProperties(parse_mode=ParseMode.HTML))
 dp = Dispatcher()
 
 # Инициализация базы данных
@@ -345,7 +347,7 @@ def admin_dashboard(admin_id):
     return render_template('admin_dashboard.html', admin_id=admin_id, dashboard=True)
 
 # Настройка вебхука
-async def on_startup(_):
+async def on_startup(dispatcher):
     logger.info("Установка вебхука...")
     try:
         webhook_info = await bot.get_webhook_info()
@@ -357,7 +359,7 @@ async def on_startup(_):
     except Exception as e:
         logger.error(f"Ошибка при установке вебхука: {str(e)}")
 
-async def on_shutdown(_):
+async def on_shutdown(dispatcher):
     logger.info("Остановка бота...")
     try:
         await bot.delete_webhook()
