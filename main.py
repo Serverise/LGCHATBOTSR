@@ -75,10 +75,10 @@ app = web.Application()
 # Настройка сессий
 setup(app, SimpleCookieStorage())
 
-# Функция для получения флэш-сообщений (синхронная для Jinja2)
-def get_flashed_messages(request):
+# Функция для получения флэш-сообщений
+async def get_flashed_messages(request):
     try:
-        session = asyncio.run(get_session(request))
+        session = await get_session(request)
         messages = session.pop('flashed_messages', [])
         return messages
     except Exception as e:
@@ -111,23 +111,24 @@ def log_admin_action(admin_id, action, details):
     finally:
         conn.close()
 
-# Обработчик маршрута для страницы логина
-async def admin_panel(request):
+# Рендеринг шаблона с обработкой ошибок
+async def render_template(template_name, request, **kwargs):
     try:
-        template = template_env.get_template('admin_login.html')
-        logger.info("Обращение к маршруту /")
+        template = template_env.get_template(template_name)
+        flashed_messages = await get_flashed_messages(request)
         return web.Response(
-            text=template.render(
-                login_page=True,
-                get_flashed_messages=get_flashed_messages
-            ),
+            text=template.render(flashed_messages=flashed_messages, **kwargs),
             content_type='text/html'
         )
     except Exception as e:
-        logger.error(f"Ошибка обработки маршрута /: {e}")
+        logger.error(f"Ошибка рендеринга шаблона {template_name}: {e}")
         return web.Response(status=500, text="Internal Server Error")
 
-# Обработчик логина
+# Маршруты
+async def admin_panel(request):
+    logger.info("Обращение к маршруту /")
+    return await render_template('admin_login.html', request, login_page=True)
+
 async def login_handler(request):
     try:
         session = await get_session(request)
@@ -153,25 +154,11 @@ async def login_handler(request):
         logger.error(f"Ошибка обработки логина: {e}")
         raise web.HTTPFound('/')
 
-# Обработчик админ-панели
 async def admin_dashboard(request):
-    try:
-        admin_id = await check_auth(request)
-        template = template_env.get_template('admin_dashboard.html')
-        logger.info(f"Обращение к маршруту /admin/{admin_id}")
-        return web.Response(
-            text=template.render(
-                dashboard=True,
-                admin_id=admin_id,
-                get_flashed_messages=get_flashed_messages
-            ),
-            content_type='text/html'
-        )
-    except Exception as e:
-        logger.error(f"Ошибка обработки админ-панели: {e}")
-        return web.Response(status=500, text="Internal Server Error")
+    admin_id = await check_auth(request)
+    logger.info(f"Обращение к маршруту /admin/{admin_id}")
+    return await render_template('admin_dashboard.html', request, dashboard=True, admin_id=admin_id)
 
-# Обработчик выхода
 async def logout_handler(request):
     try:
         session = await get_session(request)
@@ -184,12 +171,11 @@ async def logout_handler(request):
         logger.error(f"Ошибка обработки выхода: {e}")
         raise web.HTTPFound('/')
 
-# Обработчик редактирования приветственного сообщения
 async def edit_welcome(request):
-    try:
-        admin_id = await check_auth(request)
-        
-        if request.method == 'POST':
+    admin_id = await check_auth(request)
+    
+    if request.method == 'POST':
+        try:
             data = await request.post()
             welcome_message = data.get('welcome_message')
             conn = sqlite3.connect('database.db')
@@ -202,35 +188,25 @@ async def edit_welcome(request):
             session.setdefault('flashed_messages', []).append('Приветственное сообщение обновлено!')
             log_admin_action(admin_id, 'update_welcome', f'Updated welcome message to: {welcome_message[:50]}...')
             raise web.HTTPFound(f'/admin/{admin_id}')
-        
-        conn = sqlite3.connect('database.db')
-        c = conn.cursor()
-        c.execute("SELECT welcome_message FROM settings WHERE id = 1")
-        result = c.fetchone()
-        current_msg = result[0] if result else "Добро пожаловать в бот!"
-        conn.close()
-        
-        template = template_env.get_template('admin_dashboard.html')
-        return web.Response(
-            text=template.render(
-                edit_welcome=True,
-                admin_id=admin_id,
-                current_msg=current_msg,
-                get_flashed_messages=get_flashed_messages
-            ),
-            content_type='text/html'
-        )
-    except Exception as e:
-        logger.error(f"Ошибка обработки редактирования приветствия: {e}")
-        return web.Response(status=500, text="Internal Server Error")
+        except Exception as e:
+            logger.error(f"Ошибка обработки POST /edit_welcome: {e}")
+            raise web.HTTPFound(f'/admin/{admin_id}')
+    
+    conn = sqlite3.connect('database.db')
+    c = conn.cursor()
+    c.execute("SELECT welcome_message FROM settings WHERE id = 1")
+    result = c.fetchone()
+    current_msg = result[0] if result else "Добро пожаловать в бот!"
+    conn.close()
+    
+    return await render_template('admin_dashboard.html', request, edit_welcome=True, admin_id=admin_id, current_msg=current_msg)
 
-# Обработчик рассылки
 async def broadcast(request):
-    try:
-        admin_id = await check_auth(request)
-        session = await get_session(request)
-        
-        if request.method == 'POST':
+    admin_id = await check_auth(request)
+    session = await get_session(request)
+    
+    if request.method == 'POST':
+        try:
             data = await request.post()
             broadcast_message = data.get('broadcast_message')
             conn = sqlite3.connect('database.db')
@@ -244,65 +220,44 @@ async def broadcast(request):
                 try:
                     await bot.send_message(chat_id=user[0], text=broadcast_message)
                     sent_count += 1
+                    await asyncio.sleep(0.05)  # Задержка для избежания лимитов Telegram
                 except Exception as e:
                     logger.warning(f"Не удалось отправить сообщение пользователю {user[0]}: {e}")
             
             session.setdefault('flashed_messages', []).append(f'Рассылка отправлена {sent_count} пользователям!')
             log_admin_action(admin_id, 'broadcast', f'Sent broadcast to {sent_count} users')
             raise web.HTTPFound(f'/admin/{admin_id}')
-        
-        template = template_env.get_template('admin_dashboard.html')
-        return web.Response(
-            text=template.render(
-                broadcast=True,
-                admin_id=admin_id,
-                get_flashed_messages=get_flashed_messages
-            ),
-            content_type='text/html'
-        )
-    except Exception as e:
-        logger.error(f"Ошибка обработки рассылки: {e}")
-        return web.Response(status=500, text="Internal Server Error")
+        except Exception as e:
+            logger.error(f"Ошибка обработки POST /broadcast: {e}")
+            raise web.HTTPFound(f'/admin/{admin_id}')
+    
+    return await render_template('admin_dashboard.html', request, broadcast=True, admin_id=admin_id)
 
-# Обработчик личных сообщений
 async def private_message(request):
-    try:
-        admin_id = await check_auth(request)
-        session = await get_session(request)
-        
-        if request.method == 'POST':
+    admin_id = await check_auth(request)
+    session = await get_session(request)
+    
+    if request.method == 'POST':
+        try:
             data = await request.post()
             target_user = data.get('target_user')
             private_message = data.get('private_message')
-            try:
-                await bot.send_message(chat_id=target_user, text=private_message)
-                session.setdefault('flashed_messages', []).append('Сообщение отправлено!')
-                log_admin_action(admin_id, 'private_message', f'Sent message to user {target_user}')
-            except Exception as e:
-                session.setdefault('flashed_messages', []).append(f'Ошибка отправки: {str(e)}')
+            await bot.send_message(chat_id=target_user, text=private_message)
+            session.setdefault('flashed_messages', []).append('Сообщение отправлено!')
+            log_admin_action(admin_id, 'private_message', f'Sent message to user {target_user}')
             raise web.HTTPFound(f'/admin/{admin_id}')
-        
-        template = template_env.get_template('admin_dashboard.html')
-        return web.Response(
-            text=template.render(
-                private_message=True,
-                admin_id=admin_id,
-                get_flashed_messages=get_flashed_messages
-            ),
-            content_type='text/html'
-        )
-    except Exception as e:
-        logger.error(f"Ошибка обработки личного сообщения: {e}")
-        return web.Response(status=500, text="Internal Server Error")
+        except Exception as e:
+            session.setdefault('flashed_messages', []).append(f'Ошибка отправки: {str(e)}')
+            raise web.HTTPFound(f'/admin/{admin_id}')
+    
+    return await render_template('admin_dashboard.html', request, private_message=True, admin_id=admin_id)
 
-# Обработчик статистики
 async def user_stats(request):
+    admin_id = await check_auth(request)
     try:
-        admin_id = await check_auth(request)
         conn = sqlite3.connect('database.db')
         c = conn.cursor()
         
-        # Общая статистика
         c.execute("SELECT COUNT(*) FROM users")
         total_users = c.fetchone()[0]
         c.execute("SELECT COUNT(*) FROM users WHERE is_subscribed = 1")
@@ -310,7 +265,6 @@ async def user_stats(request):
         c.execute("SELECT COUNT(*) FROM users WHERE is_banned = 1")
         total_banned = c.fetchone()[0]
         
-        # Новые пользователи
         today = datetime.utcnow().strftime('%Y-%m-%d')
         c.execute("SELECT COUNT(*) FROM users WHERE date(joined_at) = ?", (today,))
         new_today = c.fetchone()[0]
@@ -319,14 +273,12 @@ async def user_stats(request):
         c.execute("SELECT COUNT(*) FROM users WHERE joined_at >= date('now', '-30 days')")
         new_month = c.fetchone()[0]
         
-        # Статистика канала
         try:
             channel_subscribers = await bot.get_chat_member_count(chat_id=CHANNEL_ID)
         except Exception as e:
             logger.error(f"Ошибка получения подписчиков канала: {e}")
             channel_subscribers = 0
         
-        # Данные для графика
         c.execute("""
             SELECT strftime('%Y-%m', joined_at) AS month, COUNT(*) AS count
             FROM users
@@ -354,30 +306,20 @@ async def user_stats(request):
             }
         }
         
-        template = template_env.get_template('admin_dashboard.html')
-        return web.Response(
-            text=template.render(
-                stats_page=True,
-                admin_id=admin_id,
-                stats=stats,
-                get_flashed_messages=get_flashed_messages
-            ),
-            content_type='text/html'
-        )
+        return await render_template('admin_dashboard.html', request, stats_page=True, admin_id=admin_id, stats=stats)
     except Exception as e:
         logger.error(f"Ошибка обработки статистики: {e}")
         return web.Response(status=500, text="Internal Server Error")
 
-# Обработчик управления пользователями
 async def user_management(request):
-    try:
-        admin_id = await check_auth(request)
-        session = await get_session(request)
-        
-        conn = sqlite3.connect('database.db')
-        c = conn.cursor()
-        
-        if request.method == 'POST':
+    admin_id = await check_auth(request)
+    session = await get_session(request)
+    
+    conn = sqlite3.connect('database.db')
+    c = conn.cursor()
+    
+    if request.method == 'POST':
+        try:
             data = await request.post()
             action = data.get('action')
             selected_users = data.getlist('selected_users') or [data.get('user_id')]
@@ -398,70 +340,48 @@ async def user_management(request):
             conn.commit()
             session.setdefault('flashed_messages', []).append(f'Действие {action} выполнено!')
             raise web.HTTPFound(f'/admin/{admin_id}')
-        
-        # Фильтры и поиск
-        search_query = request.query.get('search', '')
-        filter_subscribed = request.query.get('subscribed', '')
-        filter_admin = request.query.get('admin', '')
-        filter_banned = request.query.get('banned', '')
-        
-        query = "SELECT user_id, username, first_name, last_name, joined_at, is_subscribed, is_admin, is_banned FROM users WHERE 1=1"
-        params = []
-        if search_query:
-            query += " AND (user_id LIKE ? OR username LIKE ? OR first_name LIKE ? OR last_name LIKE ?)"
-            params.extend([f'%{search_query}%'] * 4)
-        if filter_subscribed:
-            query += " AND is_subscribed = ?"
-            params.append(1 if filter_subscribed == 'yes' else 0)
-        if filter_admin:
-            query += " AND is_admin = ?"
-            params.append(1 if filter_admin == 'yes' else 0)
-        if filter_banned:
-            query += " AND is_banned = ?"
-            params.append(1 if filter_banned == 'yes' else 0)
-        
-        c.execute(query, params)
-        users = c.fetchall()
-        conn.close()
-        
-        template = template_env.get_template('admin_dashboard.html')
-        return web.Response(
-            text=template.render(
-                user_management=True,
-                admin_id=admin_id,
-                users=users,
-                search_query=search_query,
-                filter_subscribed=filter_subscribed,
-                filter_admin=filter_admin,
-                filter_banned=filter_banned,
-                get_flashed_messages=get_flashed_messages
-            ),
-            content_type='text/html'
-        )
-    except Exception as e:
-        logger.error(f"Ошибка обработки управления пользователями: {e}")
-        return web.Response(status=500, text="Internal Server Error")
+        except Exception as e:
+            logger.error(f"Ошибка обработки POST /user_management: {e}")
+            raise web.HTTPFound(f'/admin/{admin_id}')
+    
+    search_query = request.query.get('search', '')
+    filter_subscribed = request.query.get('subscribed', '')
+    filter_admin = request.query.get('admin', '')
+    filter_banned = request.query.get('banned', '')
+    
+    query = "SELECT user_id, username, first_name, last_name, joined_at, is_subscribed, is_admin, is_banned FROM users WHERE 1=1"
+    params = []
+    if search_query:
+        query += " AND (user_id LIKE ? OR username LIKE ? OR first_name LIKE ? OR last_name LIKE ?)"
+        params.extend([f'%{search_query}%'] * 4)
+    if filter_subscribed:
+        query += " AND is_subscribed = ?"
+        params.append(1 if filter_subscribed == 'yes' else 0)
+    if filter_admin:
+        query += " AND is_admin = ?"
+        params.append(1 if filter_admin == 'yes' else 0)
+    if filter_banned:
+        query += " AND is_banned = ?"
+        params.append(1 if filter_banned == 'yes' else 0)
+    
+    c.execute(query, params)
+    users = c.fetchall()
+    conn.close()
+    
+    return await render_template('admin_dashboard.html', request, user_management=True, admin_id=admin_id, users=users,
+                                search_query=search_query, filter_subscribed=filter_subscribed,
+                                filter_admin=filter_admin, filter_banned=filter_banned)
 
-# Обработчик логов активности
 async def activity_logs(request):
+    admin_id = await check_auth(request)
     try:
-        admin_id = await check_auth(request)
         conn = sqlite3.connect('database.db')
         c = conn.cursor()
         c.execute("SELECT log_id, admin_id, action, details, timestamp FROM activity_logs ORDER BY timestamp DESC LIMIT 100")
         logs = c.fetchall()
         conn.close()
         
-        template = template_env.get_template('admin_dashboard.html')
-        return web.Response(
-            text=template.render(
-                activity_logs=True,
-                admin_id=admin_id,
-                logs=logs,
-                get_flashed_messages=get_flashed_messages
-            ),
-            content_type='text/html'
-        )
+        return await render_template('admin_dashboard.html', request, activity_logs=True, admin_id=admin_id, logs=logs)
     except Exception as e:
         logger.error(f"Ошибка обработки логов активности: {e}")
         return web.Response(status=500, text="Internal Server Error")
@@ -484,7 +404,6 @@ async def cmd_start(message: Message):
         first_name = message.from_user.first_name
         last_name = message.from_user.last_name
         
-        # Сохранение пользователя в базе данных
         conn = sqlite3.connect('database.db')
         c = conn.cursor()
         c.execute("""
@@ -494,7 +413,6 @@ async def cmd_start(message: Message):
         conn.commit()
         conn.close()
         
-        # Проверка подписки
         is_subscribed = await check_subscription(user_id)
         if is_subscribed:
             conn = sqlite3.connect('database.db')
@@ -562,17 +480,20 @@ async def on_shutdown(app):
     except Exception as e:
         logger.error(f"Ошибка при остановке приложения: {e}")
 
-# Добавление маршрутов
-app.router.add_get('/', admin_panel)
-app.router.add_post('/', login_handler)
-app.router.add_get('/admin/{admin_id}', admin_dashboard)
-app.router.add_get('/logout', logout_handler)
-app.router.add_route('*', '/admin/{admin_id}/edit_welcome', edit_welcome)
-app.router.add_route('*', '/admin/{admin_id}/broadcast', broadcast)
-app.router.add_route('*', '/admin/{admin_id}/private_message', private_message)
-app.router.add_route('*', '/admin/{admin_id}/user_stats', user_stats)
-app.router.add_route('*', '/admin/{admin_id}/user_management', user_management)
-app.router.add_route('*', '/admin/{admin_id}/activity_logs', activity_logs)
+# Регистрация маршрутов
+routes = [
+    web.get('/', admin_panel),
+    web.post('/', login_handler),
+    web.get('/admin/{admin_id}', admin_dashboard),
+    web.get('/logout', logout_handler),
+    web.route('*', '/admin/{admin_id}/edit_welcome', edit_welcome),
+    web.route('*', '/admin/{admin_id}/broadcast', broadcast),
+    web.route('*', '/admin/{admin_id}/private_message', private_message),
+    web.route('*', '/admin/{admin_id}/user_stats', user_stats),
+    web.route('*', '/admin/{admin_id}/user_management', user_management),
+    web.route('*', '/admin/{admin_id}/activity_logs', activity_logs)
+]
+app.router.add_routes(routes)
 
 # Настройка aiogram с aiohttp
 request_handler = SimpleRequestHandler(dispatcher=dp, bot=bot)
