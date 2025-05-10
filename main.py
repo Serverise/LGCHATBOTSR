@@ -32,7 +32,7 @@ def init_db():
     )''')
     # Добавление тестового админа
     c.execute("INSERT OR IGNORE INTO admins (admin_id, password) VALUES (?, ?)",
-              ("5033892308", "admin123"))
+              ("5033892308", "LegerisKEY-23489610917034123480152398"))
     # Добавление начального приветственного сообщения
     c.execute("INSERT OR IGNORE INTO settings (id, welcome_message) VALUES (?, ?)",
               (1, "Добро пожаловать в бот!"))
