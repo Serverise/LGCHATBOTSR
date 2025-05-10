@@ -1,40 +1,66 @@
 import logging
-import asyncio
-import aiosqlite
+import sqlite3
 from datetime import datetime
-from flask import Flask, render_template, request, redirect, url_for, flash, session
-import threading
-import nest_asyncio
-
-from aiogram import Bot, Dispatcher
-from aiogram.filters import Command, Text
+from flask import Flask, request, render_template, redirect, url_for, flash, session
+import os
+from aiogram import Bot, Dispatcher, types
+from aiogram.filters import CommandStart
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
-from aiogram.types import Message, ReplyKeyboardMarkup, KeyboardButton, InlineKeyboardMarkup, InlineKeyboardButton
+from aiogram.types import ReplyKeyboardMarkup, InlineKeyboardMarkup, InlineKeyboardButton
 from aiogram.enums import ParseMode, ChatMemberStatus
+from aiogram.webhook.aiohttp_server import SimpleRequestHandler, setup_application
+from aiohttp import web
 
 # Настройка логирования
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 
-# Применяем nest_asyncio для поддержки вложенных циклов
-nest_asyncio.apply()
-
-# Конфигурация Flask
+# Инициализация Flask
 app = Flask(__name__)
 app.secret_key = 'supersecretkey'
 app.config['SESSION_PERMANENT'] = True
 app.config['PERMANENT_SESSION_LIFETIME'] = 3600
 
 # Конфигурация бота
-API_TOKEN = '7731278147:AAGNBi8Td-kSWr0Hhxdh0r46fXKzVsI0S2w'  # Замените на ваш токен
-CHANNEL_ID = '-1002587647993'  # Замените на ваш ID канала
-CHANNEL_LINK = 'https://t.me/+KZeOjH5orpRiNjgy'  # Замените на ссылку на канал
+API_TOKEN = '7731278147:AAGNBi8Td-kSWr0Hhxdh0r46fXKzVsI0S2w'
+CHANNEL_ID = '-1002587647993'
+CHANNEL_LINK = 'https://t.me/+KZeOjH5orpRiNjgy'
+WEBHOOK_PATH = '/webhook'
+WEBHOOK_URL = f"https://lgchatbotsr.onrender.com{WEBHOOK_PATH}"
+
 bot = Bot(token=API_TOKEN, parse_mode=ParseMode.HTML)
 dp = Dispatcher()
 
-# Путь к базе данных
-DB_PATH = 'legeris.db'
+# Инициализация базы данных
+conn = sqlite3.connect('legeris.db', check_same_thread=False)
+cursor = conn.cursor()
+
+# Создание таблиц
+cursor.execute('''
+CREATE TABLE IF NOT EXISTS users (
+    user_id INTEGER PRIMARY KEY,
+    username TEXT,
+    first_name TEXT,
+    last_name TEXT,
+    chat_id INTEGER,
+    join_date TEXT,
+    is_admin INTEGER DEFAULT 0,
+    is_subscribed INTEGER DEFAULT 0,
+    last_subscription_change TEXT,
+    is_banned INTEGER DEFAULT 0
+)
+''')
+
+cursor.execute('''
+CREATE TABLE IF NOT EXISTS channels (
+    channel_id INTEGER PRIMARY KEY,
+    title TEXT,
+    welcome_message TEXT
+)
+''')
+
+conn.commit()
 
 # Состояния для FSM
 class Form(StatesGroup):
@@ -43,63 +69,25 @@ class Form(StatesGroup):
     select_user = State()
     private_message = State()
 
-# Инициализация базы данных
-async def init_db():
-    async with aiosqlite.connect(DB_PATH) as conn:
-        cursor = await conn.cursor()
-        await cursor.execute('''
-        CREATE TABLE IF NOT EXISTS users (
-            user_id INTEGER PRIMARY KEY,
-            username TEXT,
-            first_name TEXT,
-            last_name TEXT,
-            chat_id INTEGER,
-            join_date TEXT,
-            is_admin INTEGER DEFAULT 0,
-            is_subscribed INTEGER DEFAULT 0,
-            last_subscription_change TEXT,
-            is_banned INTEGER DEFAULT 0
-        )
-        ''')
-        await cursor.execute('''
-        CREATE TABLE IF NOT EXISTS channels (
-            channel_id INTEGER PRIMARY KEY,
-            title TEXT,
-            welcome_message TEXT
-        )
-        ''')
-        # Проверка и добавление начальных данных
-        await cursor.execute('SELECT COUNT(*) FROM channels')
-        if (await cursor.fetchone())[0] == 0:
-            await cursor.execute('INSERT INTO channels (channel_id, title, welcome_message) VALUES (?, ?, ?)',
-                                (-1002587647993, "Legeris Channel", "Добро пожаловать в наш канал! Спасибо за подписку."))
-        await cursor.execute('SELECT user_id FROM users WHERE user_id = ?', (5033892308,))
-        if not await cursor.fetchone():
-            await cursor.execute('INSERT INTO users (user_id, is_admin) VALUES (?, ?)', (5033892308, 1))
-            logger.info("Админ 5033892308 добавлен в базу данных")
-        await conn.commit()
-
 # Проверка подписки
 async def check_subscription(user_id: int) -> bool:
-    async with aiosqlite.connect(DB_PATH) as conn:
-        cursor = await conn.cursor()
-        try:
-            logger.info(f"Проверка подписки для пользователя {user_id} в канале {CHANNEL_ID}")
-            member = await bot.get_chat_member(CHANNEL_ID, user_id)
-            is_subscribed = member.status in [ChatMemberStatus.MEMBER, ChatMemberStatus.ADMINISTRATOR, ChatMemberStatus.CREATOR]
-            logger.info(f"Статус подписки пользователя {user_id}: {member.status}, is_subscribed: {is_subscribed}")
-            
-            await cursor.execute('''
-                UPDATE users 
-                SET is_subscribed = ?, last_subscription_change = ?
-                WHERE user_id = ?
-            ''', (1 if is_subscribed else 0, datetime.now().strftime("%Y-%m-%d %H:%M:%S"), user_id))
-            await conn.commit()
-            
-            return is_subscribed
-        except Exception as e:
-            logger.error(f"Ошибка проверки подписки для {user_id}: {str(e)}")
-            return False
+    try:
+        logger.info(f"Проверка подписки для пользователя {user_id} в канале {CHANNEL_ID}")
+        member = await bot.get_chat_member(CHANNEL_ID, user_id)
+        is_subscribed = member.status in [ChatMemberStatus.MEMBER, ChatMemberStatus.ADMINISTRATOR, ChatMemberStatus.CREATOR]
+        logger.info(f"Статус подписки пользователя {user_id}: {member.status}, is_subscribed: {is_subscribed}")
+        
+        cursor.execute('''
+            UPDATE users 
+            SET is_subscribed = ?, last_subscription_change = ?
+            WHERE user_id = ?
+        ''', (1 if is_subscribed else 0, datetime.now().strftime("%Y-%m-%d %H:%M:%S"), user_id))
+        conn.commit()
+        
+        return is_subscribed
+    except Exception as e:
+        logger.error(f"Ошибка проверки подписки для {user_id}: {str(e)}")
+        return False
 
 # Безопасная отправка сообщения
 async def send_message_safe(chat_id: int, text: str) -> bool:
@@ -112,8 +100,8 @@ async def send_message_safe(chat_id: int, text: str) -> bool:
         return False
 
 # Команда /start
-@dp.message(Command(commands=['start']))
-async def start_command(message: Message):
+@dp.message(CommandStart())
+async def start_command(message: types.Message):
     user_id = message.from_user.id
     username = message.from_user.username
     first_name = message.from_user.first_name
@@ -121,93 +109,88 @@ async def start_command(message: Message):
     chat_id = message.chat.id
     join_date = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
-    async with aiosqlite.connect(DB_PATH) as conn:
-        cursor = await conn.cursor()
-        try:
-            await cursor.execute('SELECT user_id FROM users WHERE user_id = ?', (user_id,))
-            user = await cursor.fetchone()
+    try:
+        cursor.execute('SELECT user_id FROM users WHERE user_id = ?', (user_id,))
+        user = cursor.fetchone()
 
-            if not user:
-                await cursor.execute('''
-                INSERT INTO users (user_id, username, first_name, last_name, chat_id, join_date)
-                VALUES (?, ?, ?, ?, ?, ?)
-                ''', (user_id, username, first_name, last_name, chat_id, join_date))
-                await conn.commit()
-                logger.info(f"Новый пользователь зарегистрирован: {user_id} - {username}")
-        except Exception as e:
-            logger.error(f"Ошибка базы данных при регистрации пользователя {user_id}: {str(e)}")
+        if not user:
+            cursor.execute('''
+            INSERT INTO users (user_id, username, first_name, last_name, chat_id, join_date)
+            VALUES (?, ?, ?, ?, ?, ?)
+            ''', (user_id, username, first_name, last_name, chat_id, join_date))
+            conn.commit()
+            logger.info(f"Новый пользователь зарегистрирован: {user_id} - {username}")
+    except Exception as e:
+        logger.error(f"Ошибка базы данных при регистрации пользователя {user_id}: {str(e)}")
 
     # Проверяем подписку
     if await check_subscription(user_id):
-        async with aiosqlite.connect(DB_PATH) as conn:
-            cursor = await conn.cursor()
-            try:
-                await cursor.execute('SELECT welcome_message FROM channels LIMIT 1')
-                welcome_msg = await cursor.fetchone()
-                msg = welcome_msg[0] if welcome_msg and welcome_msg[0] else "Спасибо за подписку! Вы добавлены в канал."
-                await message.answer(msg)
-            except Exception as e:
-                logger.error(f"Ошибка базы данных при получении приветственного сообщения: {str(e)}")
-                await message.answer("Произошла ошибка. Попробуйте позже.")
-    else:
-        keyboard = ReplyKeyboardMarkup(resize_keyboard=True, one_time_keyboard=False)
-        keyboard.add(KeyboardButton("Подписаться на канал"))
-        async with aiosqlite.connect(DB_PATH) as conn:
-            cursor = await conn.cursor()
-            await cursor.execute('SELECT is_admin FROM users WHERE user_id = ?', (user_id,))
-            result = await cursor.fetchone()
+        try:
+            cursor.execute('SELECT welcome_message FROM channels LIMIT 1')
+            welcome_msg = cursor.fetchone()
+            msg = welcome_msg[0] if welcome_msg and welcome_msg[0] else "Спасибо за подписку! Вы добавлены в канал."
+            keyboard = ReplyKeyboardMarkup(resize_keyboard=True)
+            cursor.execute('SELECT is_admin FROM users WHERE user_id = ?', (user_id,))
+            result = cursor.fetchone()
             is_admin = result[0] if result else 0
             if is_admin:
-                keyboard.add(KeyboardButton("Панель управления"))
+                keyboard.add(types.KeyboardButton("Панель управления"))
+            await message.answer(msg, reply_markup=keyboard)
+        except Exception as e:
+            logger.error(f"Ошибка базы данных при получении приветственного сообщения: {str(e)}")
+            await message.answer("Произошла ошибка. Попробуйте позже.")
+    else:
+        keyboard = ReplyKeyboardMarkup(resize_keyboard=True)
+        keyboard.add(types.KeyboardButton("Подписаться на канал"))
+        cursor.execute('SELECT is_admin FROM users WHERE user_id = ?', (user_id,))
+        result = cursor.fetchone()
+        is_admin = result[0] if result else 0
+        if is_admin:
+            keyboard.add(types.KeyboardButton("Панель управления"))
         await message.answer(
             f"Пожалуйста, подпишитесь на канал по ссылке: {CHANNEL_LINK}",
             reply_markup=keyboard
         )
 
 # Обработка кнопки "Подписаться на канал"
-@dp.message(Text(equals="Подписаться на канал"))
-async def subscribe_channel(message: Message):
+@dp.message(lambda message: message.text == "Подписаться на канал")
+async def subscribe_channel(message: types.Message):
     user_id = message.from_user.id
     if await check_subscription(user_id):
-        async with aiosqlite.connect(DB_PATH) as conn:
-            cursor = await conn.cursor()
-            await cursor.execute('SELECT welcome_message FROM channels LIMIT 1')
-            welcome_msg = await cursor.fetchone()
-            msg = welcome_msg[0] if welcome_msg and welcome_msg[0] else "Спасибо за подписку! Вы добавлены в канал."
-            keyboard = ReplyKeyboardMarkup(resize_keyboard=True, one_time_keyboard=False)
-            await cursor.execute('SELECT is_admin FROM users WHERE user_id = ?', (user_id,))
-            result = await cursor.fetchone()
-            is_admin = result[0] if result else 0
-            if is_admin:
-                keyboard.add(KeyboardButton("Панель управления"))
-            await message.answer(msg, reply_markup=keyboard)
+        cursor.execute('SELECT welcome_message FROM channels LIMIT 1')
+        welcome_msg = cursor.fetchone()
+        msg = welcome_msg[0] if welcome_msg and welcome_msg[0] else "Спасибо за подписку! Вы добавлены в канал."
+        keyboard = ReplyKeyboardMarkup(resize_keyboard=True)
+        cursor.execute('SELECT is_admin FROM users WHERE user_id = ?', (user_id,))
+        result = cursor.fetchone()
+        is_admin = result[0] if result else 0
+        if is_admin:
+            keyboard.add(types.KeyboardButton("Панель управления"))
+        await message.answer(msg, reply_markup=keyboard)
     else:
-        keyboard = ReplyKeyboardMarkup(resize_keyboard=True, one_time_keyboard=False)
-        keyboard.add(KeyboardButton("Подписаться на канал"))
+        keyboard = ReplyKeyboardMarkup(resize_keyboard=True)
+        keyboard.add(types.KeyboardButton("Подписаться на канал"))
         await message.answer(
             f"Вы не подписаны на канал. Пожалуйста, подпишитесь по ссылке: {CHANNEL_LINK}",
             reply_markup=keyboard
         )
 
 # Панель управления для админов
-@dp.message(Text(equals="Панель управления"))
-async def admin_panel(message: Message):
+@dp.message(lambda message: message.text == "Панель управления")
+async def admin_panel(message: types.Message):
     user_id = message.from_user.id
-    async with aiosqlite.connect(DB_PATH) as conn:
-        cursor = await conn.cursor()
-        await cursor.execute('SELECT is_admin FROM users WHERE user_id = ?', (user_id,))
-        result = await cursor.fetchone()
-        is_admin = result[0] if result else 0
-        if not is_admin:
-            await message.answer("У вас нет доступа к этой функции.")
-            return
+    cursor.execute('SELECT is_admin FROM users WHERE user_id = ?', (user_id,))
+    result = cursor.fetchone()
+    is_admin = result[0] if result else 0
+    if not is_admin:
+        await message.answer("У вас нет доступа к этой функции.")
+        return
     
-    keyboard = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="Изменить приветственное сообщение", callback_data="edit_welcome")],
-        [InlineKeyboardButton(text="Сделать рассылку", callback_data="broadcast")],
-        [InlineKeyboardButton(text="Отправить личное сообщение", callback_data="private_message")],
-        [InlineKeyboardButton(text="Статистика пользователей", callback_data="user_stats")]
-    ])
+    keyboard = InlineKeyboardMarkup()
+    keyboard.add(InlineKeyboardButton("Изменить приветственное сообщение", callback_data="edit_welcome"))
+    keyboard.add(InlineKeyboardButton("Сделать рассылку", callback_data="broadcast"))
+    keyboard.add(InlineKeyboardButton("Отправить личное сообщение", callback_data="private_message"))
+    keyboard.add(InlineKeyboardButton("Статистика пользователей", callback_data="user_stats"))
     await message.answer("Панель управления администратора:", reply_markup=keyboard)
 
 # Обработка инлайн кнопок
@@ -222,42 +205,35 @@ async def process_admin_buttons(callback_query: types.CallbackQuery, state: FSMC
     
     elif callback_query.data == "broadcast":
         await Form.broadcast_message.set()
-        await bot.send_message(user_id, "Введите at message to broadcast to all users:")
+        await bot.send_message(user_id, "Введите сообщение для рассылки всем пользователям:")
     
     elif callback_query.data == "private_message":
         await Form.select_user.set()
         await bot.send_message(user_id, "Введите ID пользователя, которому хотите отправить сообщение:")
     
     elif callback_query.data == "user_stats":
-        async with aiosqlite.connect(DB_PATH) as conn:
-            cursor = await conn.cursor()
-            await cursor.execute('SELECT COUNT(*) FROM users')
-            total_users = (await cursor.fetchone())[0]
-            await cursor.execute('SELECT COUNT(*) FROM users WHERE date(join_date) = date("now")')
-            new_today = (await cursor.fetchone())[0]
-            stats = f"📊 Статистика пользователей:\n\nВсего пользователей: {total_users}\nНовых сегодня: {new_today}"
-            await bot.send_message(user_id, stats)
+        cursor.execute('SELECT COUNT(*) FROM users')
+        total_users = cursor.fetchone()[0]
+        cursor.execute('SELECT COUNT(*) FROM users WHERE date(join_date) = date("now")')
+        new_today = cursor.fetchone()[0]
+        stats = f"📊 Статистика пользователей:\n\nВсего пользователей: {total_users}\nНовых сегодня: {new_today}"
+        await bot.send_message(user_id, stats)
 
 # Обработка ввода приветственного сообщения
-@dp.message(Form.welcome_message)
-async def process_welcome_message(message: Message, state: FSMContext):
+@dp.message(state=Form.welcome_message)
+async def process_welcome_message(message: types.Message, state: FSMContext):
     welcome_msg = message.text
-    async with aiosqlite.connect(DB_PATH) as conn:
-        cursor = await conn.cursor()
-        await cursor.execute('UPDATE channels SET welcome_message = ? WHERE rowid = 1', (welcome_msg,))
-        await conn.commit()
+    cursor.execute('UPDATE channels SET welcome_message = ? WHERE rowid = 1', (welcome_msg,))
+    conn.commit()
     await state.finish()
     await message.answer("Приветственное сообщение успешно обновлено!")
 
 # Обработка ввода сообщения для рассылки
-@dp.message(Form.broadcast_message)
-async def process_broadcast(message: Message, state: FSMContext):
+@dp.message(state=Form.broadcast_message)
+async def process_broadcast(message: types.Message, state: FSMContext):
     broadcast_msg = message.text
-    user_id = message.from_user.id
-    async with aiosqlite.connect(DB_PATH) as conn:
-        cursor = await conn.cursor()
-        await cursor.execute('SELECT user_id FROM users WHERE is_banned = 0 AND is_subscribed = 1')
-        users = await cursor.fetchall()
+    cursor.execute('SELECT user_id FROM users WHERE is_banned = 0 AND is_subscribed = 1')
+    users = cursor.fetchall()
     success = 0
     failed = 0
     for user in users:
@@ -265,13 +241,12 @@ async def process_broadcast(message: Message, state: FSMContext):
             success += 1
         else:
             failed += 1
-        await asyncio.sleep(0.05)  # Ограничение скорости
     await state.finish()
     await message.answer(f"Рассылка завершена!\nУспешно: {success}\nНе удалось: {failed}")
 
 # Обработка выбора пользователя для личного сообщения
-@dp.message(Form.select_user)
-async def process_select_user(message: Message, state: FSMContext):
+@dp.message(state=Form.select_user)
+async def process_select_user(message: types.Message, state: FSMContext):
     try:
         target_user = int(message.text)
         await state.update_data(target_user=target_user)
@@ -281,8 +256,8 @@ async def process_select_user(message: Message, state: FSMContext):
         await message.answer("Пожалуйста, введите корректный ID пользователя (только цифры).")
 
 # Обработка личного сообщения
-@dp.message(Form.private_message)
-async def process_private_message(message: Message, state: FSMContext):
+@dp.message(state=Form.private_message)
+async def process_private_message(message: types.Message, state: FSMContext):
     private_msg = message.text
     data = await state.get_data()
     target_user = data.get('target_user')
@@ -292,19 +267,37 @@ async def process_private_message(message: Message, state: FSMContext):
         await message.answer(f"Не удалось отправить сообщение пользователю {target_user}")
     await state.finish()
 
+# Инициализация базы данных
+def init_db():
+    try:
+        cursor.execute('SELECT COUNT(*) FROM channels')
+        if cursor.fetchone()[0] == 0:
+            cursor.execute('INSERT INTO channels (channel_id, title, welcome_message) VALUES (?, ?, ?)', 
+                          (-1002587647993, "Legeris Channel", "Добро пожаловать в наш канал! Спасибо за подписку."))
+            conn.commit()
+        cursor.execute('SELECT user_id FROM users WHERE user_id = ?', (5033892308,))
+        if not cursor.fetchone():
+            cursor.execute('INSERT INTO users (user_id, is_admin) VALUES (?, ?)', (5033892308, 1))
+            conn.commit()
+            logger.info(f"Админ 5033892308 успешно добавлен в базу данных")
+        else:
+            logger.info(f"Админ 5033892308 уже существует в базе данных")
+    except Exception as e:
+        logger.error(f"Ошибка инициализации базы данных: {str(e)}")
+
 # Проверка авторизации админа
 def check_admin_auth(admin_id):
     if 'admin_id' not in session or session['admin_id'] != admin_id:
         return False
-    async def check_admin():
-        async with aiosqlite.connect(DB_PATH) as connáz
-            cursor = await conn.cursor()
-            await cursor.execute('SELECT is_admin FROM users WHERE user_id = ?', (admin_id,))
-            result = await cursor.fetchone()
-            return result and result[0] == 1
-    return asyncio.run(check_admin())
+    try:
+        cursor.execute('SELECT is_admin FROM users WHERE user_id = ?', (admin_id,))
+        result = cursor.fetchone()
+        return result and result[0] == 1
+    except Exception as e:
+        logger.error(f"Ошибка базы данных при проверке админа {admin_id}: {str(e)}")
+        return False
 
-# Flask: HTML шаблоны
+# Маршруты Flask
 @app.route('/', methods=['GET', 'POST'])
 def admin_panel():
     if request.method == 'POST':
@@ -313,13 +306,9 @@ def admin_panel():
         try:
             admin_id = int(admin_id)
             if password == 'LegerisKEY-738197481275618273858173':
-                async def check_admin():
-                    async with aiosqlite.connect(DB_PATH) as conn:
-                        cursor = await conn.cursor()
-                        await cursor.execute('SELECT is_admin FROM users WHERE user_id = ?', (admin_id,))
-                        result = await cursor.fetchone()
-                        return result and result[0] == 1
-                if asyncio.run(check_admin()):
+                cursor.execute('SELECT is_admin FROM users WHERE user_id = ?', (admin_id,))
+                result = cursor.fetchone()
+                if result and result[0] == 1:
                     session['admin_id'] = admin_id
                     return redirect(url_for('admin_dashboard', admin_id=admin_id))
                 flash('У вас нет прав администратора.')
@@ -330,72 +319,46 @@ def admin_panel():
         except Exception as e:
             logger.error(f"Ошибка базы данных при проверке админа {admin_id}: {str(e)}")
             flash('Произошла ошибка. Попробуйте позже.')
-    return render_template_string('''
-    <!DOCTYPE html>
-    <html>
-    <head>
-        <title>Admin Login</title>
-    </head>
-    <body>
-        <h2>Вход для администратора</h2>
-        {% with messages = get_flashed_messages() %}
-            {% if messages %}
-                <ul>
-                {% for message in messages %}
-                    <li>{{ message }}</li>
-                {% endfor %}
-                </ul>
-            {% endif %}
-        {% endwith %}
-        <form method="post">
-            <label>Admin ID:</label><br>
-            <input type="text" name="admin_id"><br>
-            <label>Password:</label><br>
-            <input type="password" name="password"><br>
-            <input type="submit" value="Войти">
-        </form>
-    </body>
-    </html>
-    ''')
+    return render_template('admin_dashboard.html', login_page=True)
 
 @app.route('/admin/<int:admin_id>')
 def admin_dashboard(admin_id):
     if not check_admin_auth(admin_id):
         return redirect(url_for('admin_panel'))
-    return render_template_string('''
-    <!DOCTYPE html>
-    <html>
-    <head>
-        <title>Admin Dashboard</title>
-    </head>
-    <body>
-        <h2>Панель администратора</h2>
-        <p>Добро пожаловать, Admin ID: {{ admin_id }}</p>
-        <a href="{{ url_for('admin_panel') }}">Выйти</a>
-    </body>
-    </html>
-    ''', admin_id=admin_id)
+    return render_template('admin_dashboard.html', admin_id=admin_id, dashboard=True)
 
-# Асинхронный запуск бота
-async def start_bot():
-    try:
-        logger.info("Запуск бота...")
-        await dp.start_polling(bot, skip_updates=True)
-    except Exception as e:
-        logger.error(f"Ошибка при запуске бота: {str(e)}")
+# Настройка вебхука
+async def on_startup(_):
+    logger.info("Установка вебхука...")
+    webhook_info = await bot.get_webhook_info()
+    if webhook_info.url != WEBHOOK_URL:
+        await bot.set_webhook(url=WEBHOOK_URL)
+        logger.info(f"Вебхук установлен на {WEBHOOK_URL}")
+    else:
+        logger.info("Вебхук уже установлен")
 
-# Главная функция
-async def main():
-    await init_db()
-    # Запускаем Flask в отдельном потоке
-    def run_flask():
-        app.run(host='0.0.0.0', port=5000, use_reloader=False)
-    
-    flask_thread = threading.Thread(target=run_flask, daemon=True)
-    flask_thread.start()
-    
-    # Запускаем бота
-    await start_bot()
+async def on_shutdown(_):
+    logger.info("Остановка бота...")
+    await bot.delete_webhook()
+    await bot.session.close()
 
+# Запуск приложения
 if __name__ == '__main__':
-    asyncio.run(main())
+    init_db()
+    # Настройка aiohttp приложения для вебхуков
+    aiohttp_app = web.Application()
+    webhook_requests_handler = SimpleRequestHandler(
+        dispatcher=dp,
+        bot=bot,
+    )
+    webhook_requests_handler.register(aiohttp_app, path=WEBHOOK_PATH)
+    setup_application(aiohttp_app, dp, bot=bot)
+
+    # Интеграция Flask с aiohttp
+    app.aiohttp_app = aiohttp_app
+
+    # Запуск Flask и вебхуков
+    from aiohttp.web import run_app
+    dp.startup.register(on_startup)
+    dp.shutdown.register(on_shutdown)
+    run_app(aiohttp_app, host='0.0.0.0', port=int(os.getenv('PORT', 5000)))
