@@ -10,7 +10,6 @@ from aiogram.fsm.state import State, StatesGroup
 from aiogram.types import ReplyKeyboardMarkup, KeyboardButton, InlineKeyboardMarkup, InlineKeyboardButton
 from aiogram.enums import ParseMode, ChatMemberStatus
 from aiogram.client.default import DefaultBotProperties
-from aiogram.webhook.aiohttp_server import SimpleRequestHandler, setup_application
 import jinja2
 import os
 
@@ -616,8 +615,14 @@ async def logout(request):
         del sessions[admin_id]
     raise web.HTTPFound('/')
 
+# Обработчик вебхука
+async def webhook_handler(request):
+    update = types.Update(**await request.json())
+    await dp.feed_update(bot, update)
+    return web.Response(status=200)
+
 # Настройка вебхука
-async def on_startup(dispatcher):
+async def on_startup(app):
     logger.info("Установка вебхука...")
     try:
         webhook_info = await bot.get_webhook_info()
@@ -629,7 +634,7 @@ async def on_startup(dispatcher):
     except Exception as e:
         logger.error(f"Ошибка при установке вебхука: {str(e)}")
 
-async def on_shutdown(dispatcher):
+async def on_shutdown(app):
     logger.info("Остановка бота...")
     try:
         await bot.delete_webhook()
@@ -677,12 +682,11 @@ if __name__ == '__main__':
     app.router.add_post('/admin/{admin_id:\d+}/user_management', user_management)
     app.router.add_get('/admin/{admin_id:\d+}/activity_logs', activity_logs)
     app.router.add_get('/logout', logout)
+    app.router.add_post(WEBHOOK_PATH, webhook_handler)
     
-    # Настройка вебхука для бота
-    dp.startup.register(on_startup)
-    dp.shutdown.register(on_shutdown)
-    dp.webhook.setup(webhook_path=WEBHOOK_PATH)
-    setup_application(app, dp, bot=bot)
+    # Регистрация событий старта и остановки
+    app.on_startup.append(on_startup)
+    app.on_shutdown.append(on_shutdown)
     
     # Запуск сервера
     port = int(os.getenv('PORT', 8080))
