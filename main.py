@@ -2,8 +2,7 @@ import os
 import logging
 import aiosqlite
 import asyncio
-import json
-from datetime import datetime, timedelta
+from datetime import datetime
 from aiohttp import web, ClientSession
 from aiohttp_session import setup, get_session, SimpleCookieStorage
 from jinja2 import Environment, FileSystemLoader
@@ -71,9 +70,9 @@ async def init_db():
 BOT_TOKEN = os.getenv('BOT_TOKEN', '7731278147:AAGNBi8Td-kSWr0Hhxdh0r46fXKzVsI0S2w')
 CHANNEL_ID = '-1002480737204'
 CHANNEL_INVITE_LINK = 'https://t.me/+2o4OyJcHgeo4ZWIy'
-WEBHOOK_PATH = '/webhook'  # Упрощённый путь
+WEBHOOK_PATH = '/webhook'  # Простой путь из старого кода
 WEBHOOK_URL = os.getenv('WEBHOOK_URL', 'https://lgchatbotsr.onrender.com') + WEBHOOK_PATH
-SECRET_TOKEN = 'SkibidiLegerisSecret2025'
+SECRET_TOKEN = 'SkibidiLegerisSecret2025'  # Для безопасности
 bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher()
 
