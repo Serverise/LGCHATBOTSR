@@ -68,8 +68,8 @@ async def init_db():
 
 # Инициализация бота и диспетчера
 BOT_TOKEN = os.getenv('BOT_TOKEN', '7731278147:AAGNBi8Td-kSWr0Hhxdh0r46fXKzVsI0S2w')
-CHANNEL_ID = '-1002480737204'
-CHANNEL_INVITE_LINK = 'https://t.me/+2o4OyJcHgeo4ZWIy'
+CHANNEL_ID = '-1001661064596'
+CHANNEL_INVITE_LINK = 'https://t.me/legerisprofi'
 WEBHOOK_PATH = '/webhook'  # Простой путь из старого кода
 WEBHOOK_URL = os.getenv('WEBHOOK_URL', 'https://lgchatbotsr.onrender.com') + WEBHOOK_PATH
 SECRET_TOKEN = 'SkibidiLegerisSecret2025'  # Для безопасности
