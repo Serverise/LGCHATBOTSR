@@ -71,7 +71,7 @@ async def init_db():
 BOT_TOKEN = os.getenv('BOT_TOKEN', '7731278147:AAGNBi8Td-kSWr0Hhxdh0r46fXKzVsI0S2w')
 CHANNEL_ID = '-1002480737204'
 CHANNEL_INVITE_LINK = 'https://t.me/+2o4OyJcHgeo4ZWIy'
-WEBHOOK_PATH = '/webhook/SkibidiLegeris1869186186941859-1671-*1&4@5^1$1$7*5$3-SECRET'
+WEBHOOK_PATH = '/webhook'  # Упрощённый путь
 WEBHOOK_URL = os.getenv('WEBHOOK_URL', 'https://lgchatbotsr.onrender.com') + WEBHOOK_PATH
 SECRET_TOKEN = 'SkibidiLegerisSecret2025'
 bot = Bot(token=BOT_TOKEN)
@@ -567,6 +567,37 @@ async def cmd_status(message: Message):
         await message.answer("Произошла ошибка. Попробуйте позже.")
     except Exception as e:
         logger.error(f"Ошибка обработки команды /status: {e}")
+        await message.answer("Произошла ошибка. Попробуйте позже.")
+
+# Обработчик всех текстовых сообщений
+@dp.message()
+async def handle_all_messages(message: Message):
+    try:
+        user_id = str(message.from_user.id)
+        logger.debug(f"Получено сообщение от user_id {user_id}: {message.text}")
+        
+        # Проверка подписки
+        is_subscribed = await check_subscription(user_id)
+        if not is_subscribed:
+            keyboard = InlineKeyboardMarkup(
+                inline_keyboard=[
+                    [InlineKeyboardButton(text="Подписаться на канал", url=CHANNEL_INVITE_LINK)],
+                    [InlineKeyboardButton(text="Проверить подписку", callback_data="check_subscription")]
+                ]
+            )
+            await message.answer(
+                "Пожалуйста, подпишитесь на наш канал, чтобы продолжить!",
+                reply_markup=keyboard
+            )
+            return
+        
+        # Ответ на любое сообщение
+        await message.answer(f"Я получил ваше сообщение: {message.text}")
+    except TelegramAPIError as e:
+        logger.error(f"Ошибка обработки сообщения (Telegram): {e}")
+        await message.answer("Произошла ошибка. Попробуйте позже.")
+    except Exception as e:
+        logger.error(f"Ошибка обработки сообщения: {e}")
         await message.answer("Произошла ошибка. Попробуйте позже.")
 
 # Настройка вебхука с retry
