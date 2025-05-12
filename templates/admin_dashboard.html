@@ -122,7 +122,7 @@
                 <a href="/admin/{{ admin_id }}/activity_logs" class="block nav-link py-3 px-4 rounded-lg {{ 'active' if activity_logs else '' }}">
                     <i class="fas fa-history mr-3"></i> Логи
                 </a>
-                <a href="/logout?admin_id={{ admin_id }}" class="block nav-link py-3 px-4 rounded-lg text-red-300 hover:text-red-100">
+                <a href="/logout" class="block nav-link py-3 px-4 rounded-lg text-red-300 hover:text-red-100">
                     <i class="fas fa-sign-out-alt mr-3"></i> Выход
                 </a>
             </nav>
@@ -268,19 +268,19 @@
                         <div class="grid grid-cols-1 md:grid-cols-4 gap-4">
                             <div class="bg-white p-4 rounded-lg shadow">
                                 <h4 class="text-lg font-medium text-gray-700 mb-2">Всего пользователей</h4>
-                                <p class="text-3xl font-bold text-amber-600">{{ stats.total_users }}</p>
+                                <p class="text-3xl font-bold text-amber-600" id="total_users">{{ stats.total_users }}</p>
                             </div>
                             <div class="bg-white p-4 rounded-lg shadow">
                                 <h4 class="text-lg font-medium text-gray-700 mb-2">Новых сегодня</h4>
-                                <p class="text-3xl font-bold text-amber-600">{{ stats.new_today }}</p>
+                                <p class="text-3xl font-bold text-amber-600" id="new_today">{{ stats.new_today }}</p>
                             </div>
                             <div class="bg-white p-4 rounded-lg shadow">
                                 <h4 class="text-lg font-medium text-gray-700 mb-2">Новых за неделю</h4>
-                                <p class="text-3xl font-bold text-amber-600">{{ stats.new_week }}</p>
+                                <p class="text-3xl font-bold text-amber-600" id="new_week">{{ stats.new_week }}</p>
                             </div>
                             <div class="bg-white p-4 rounded-lg shadow">
                                 <h4 class="text-lg font-medium text-gray-700 mb-2">Новых за месяц</h4>
-                                <p class="text-3xl font-bold text-amber-600">{{ stats.new_month }}</p>
+                                <p class="text-3xl font-bold text-amber-600" id="new_month">{{ stats.new_month }}</p>
                             </div>
                         </div>
                     </div>
@@ -291,11 +291,15 @@
                         <div class="grid grid-cols-1 md:grid-cols-3 gap-4">
                             <div class="bg-white p-4 rounded-lg shadow">
                                 <h4 class="text-lg font-medium text-gray-700 mb-2">Всего подписчиков</h4>
-                                <p class="text-3xl font-bold text-amber-600">{{ stats.total_subscribers }}</p>
+                                <p class="text-3xl font-bold text-amber-600" id="total_subscribers">{{ stats.total_subscribers }}</p>
                             </div>
                             <div class="bg-white p-4 rounded-lg shadow">
                                 <h4 class="text-lg font-medium text-gray-700 mb-2">Подписчиков в канале</h4>
-                                <p class="text-3xl font-bold text-amber-600">{{ stats.channel_subscribers }}</p>
+                                <p class="text-3xl font-bold text-amber-600" id="channel_subscribers">{{ stats.channel_subscribers }}</p>
+                            </div>
+                            <div class="bg-white p-4 rounded-lg shadow">
+                                <h4 class="text-lg font-medium text-gray-700 mb-2">Заблокировано</h4>
+                                <p class="text-3xl font-bold text-amber-600" id="total_banned">{{ stats.total_banned }}</p>
                             </div>
                         </div>
                     </div>
@@ -305,13 +309,14 @@
                     <canvas id="userChart" class="w-full"></canvas>
                 </div>
                 <script>
+                    // Инициализация графика
                     document.addEventListener('DOMContentLoaded', function() {
                         const ctx = document.getElementById('userChart').getContext('2d');
                         const chartData = {
                             labels: {{ stats.chart_data.labels|tojson|safe }},
                             datasets: {{ stats.chart_data.datasets|tojson|safe }}
                         };
-                        new Chart(ctx, {
+                        const userChart = new Chart(ctx, {
                             type: 'bar',
                             data: chartData,
                             options: {
@@ -322,6 +327,34 @@
                                 }
                             }
                         });
+
+                        // Функция автообновления статистики
+                        function updateStats() {
+                            fetch('/admin/{{ admin_id }}/stats_json')
+                                .then(response => response.json())
+                                .then(data => {
+                                    if (!data.error) {
+                                        document.getElementById('total_users').textContent = data.total_users;
+                                        document.getElementById('new_today').textContent = data.new_today;
+                                        document.getElementById('new_week').textContent = data.new_week;
+                                        document.getElementById('new_month').textContent = data.new_month;
+                                        document.getElementById('total_subscribers').textContent = data.total_subscribers;
+                                        document.getElementById('channel_subscribers').textContent = data.channel_subscribers;
+                                        document.getElementById('total_banned').textContent = data.total_banned;
+                                        // Обновление графика
+                                        userChart.data.datasets[0].data = [data.new_today, data.new_week, data.new_month];
+                                        userChart.update();
+                                    } else {
+                                        console.error('Ошибка получения статистики:', data.error);
+                                    }
+                                })
+                                .catch(error => console.error('Ошибка AJAX-запроса:', error));
+                        }
+
+                        // Обновлять статистику каждые 30 секунд
+                        setInterval(updateStats, 30000);
+                        // Выполнить первый запрос сразу
+                        updateStats();
                     });
                 </script>
                 {% elif user_management %}
