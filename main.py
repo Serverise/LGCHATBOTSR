@@ -2,7 +2,8 @@ import os
 import logging
 import sqlite3
 import asyncio
-from datetime import datetime
+import json
+from datetime import datetime, timedelta
 from aiohttp import web
 from aiohttp_session import setup, get_session, SimpleCookieStorage
 from jinja2 import Environment, FileSystemLoader
@@ -12,7 +13,14 @@ from aiogram.filters import Command
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton, Message
 
 # Настройка логирования
-logging.basicConfig(level=logging.INFO)
+logging.basicConfig(
+    level=logging.DEBUG,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    handlers=[
+        logging.FileHandler('bot.log'),
+        logging.StreamHandler()
+    ]
+)
 logger = logging.getLogger(__name__)
 
 # Настройка Jinja2
@@ -64,7 +72,7 @@ def init_db():
 BOT_TOKEN = os.getenv('BOT_TOKEN', '7731278147:AAGNBi8Td-kSWr0Hhxdh0r46fXKzVsI0S2w')
 CHANNEL_ID = '-1002480737204'
 CHANNEL_INVITE_LINK = 'https://t.me/+2o4OyJcHgeo4ZWIy'
-WEBHOOK_PATH = '/webhook'
+WEBHOOK_PATH = '/webhook/SkibidiLegeris1869186186941859-1671-*1&4@5^1$1$7*5$3-SECRET'
 WEBHOOK_URL = os.getenv('WEBHOOK_URL', 'https://lgchatbotsr.onrender.com') + WEBHOOK_PATH
 bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher()
@@ -126,7 +134,7 @@ async def render_template(template_name, request, **kwargs):
 
 # Маршруты
 async def admin_panel(request):
-    logger.info("Обращение к маршруту /")
+    logger.debug("Обращение к маршруту /")
     return await render_template('admin_login.html', request, login_page=True)
 
 async def login_handler(request):
@@ -158,7 +166,7 @@ async def admin_dashboard(request):
     admin_id = await check_auth(request)
     if not admin_id:
         return web.HTTPFound('/')
-    logger.info(f"Обращение к маршруту /admin/{admin_id}")
+    logger.debug(f"Обращение к маршруту /admin/{admin_id}")
     return await render_template('admin_dashboard.html', request, dashboard=True, admin_id=admin_id)
 
 async def logout_handler(request):
@@ -281,8 +289,9 @@ async def user_stats(request):
         
         try:
             channel_subscribers = await bot.get_chat_member_count(chat_id=CHANNEL_ID)
+            logger.debug(f"Получено количество подписчиков канала {CHANNEL_ID}: {channel_subscribers}")
         except Exception as e:
-            logger.error(f"Ошибка получения подписчиков канала: {e}")
+            logger.error(f"Ошибка получения подписчиков канала {CHANNEL_ID}: {e}")
             channel_subscribers = 0
         
         c.execute("""
@@ -316,6 +325,53 @@ async def user_stats(request):
     except Exception as e:
         logger.error(f"Ошибка обработки статистики: {e}")
         return web.HTTPFound('/')
+
+async def stats_json(request):
+    admin_id = await check_auth(request)
+    if not admin_id:
+        return web.json_response({'error': 'Unauthorized'}, status=401)
+    try:
+        conn = sqlite3.connect('database.db')
+        c = conn.cursor()
+        
+        c.execute("SELECT COUNT(*) FROM users")
+        total_users = c.fetchone()[0]
+        c.execute("SELECT COUNT(*) FROM users WHERE is_subscribed = 1")
+        total_subscribers = c.fetchone()[0]
+        c.execute("SELECT COUNT(*) FROM users WHERE is_banned = 1")
+        total_banned = c.fetchone()[0]
+        
+        today = datetime.utcnow().strftime('%Y-%m-%d')
+        c.execute("SELECT COUNT(*) FROM users WHERE date(joined_at) = ?", (today,))
+        new_today = c.fetchone()[0]
+        c.execute("SELECT COUNT(*) FROM users WHERE joined_at >= date('now', '-7 days')")
+        new_week = c.fetchone()[0]
+        c.execute("SELECT COUNT(*) FROM users WHERE joined_at >= date('now', '-30 days')")
+        new_month = c.fetchone()[0]
+        
+        try:
+            channel_subscribers = await bot.get_chat_member_count(chat_id=CHANNEL_ID)
+            logger.debug(f"Получено количество подписчиков канала {CHANNEL_ID}: {channel_subscribers}")
+        except Exception as e:
+            logger.error(f"Ошибка получения подписчиков канала {CHANNEL_ID}: {e}")
+            channel_subscribers = 0
+        
+        conn.close()
+        
+        stats = {
+            'total_users': total_users,
+            'new_today': new_today,
+            'new_week': new_week,
+            'new_month': new_month,
+            'total_subscribers': total_subscribers,
+            'total_banned': total_banned,
+            'channel_subscribers': channel_subscribers
+        }
+        
+        return web.json_response(stats)
+    except Exception as e:
+        logger.error(f"Ошибка обработки JSON-статистики: {e}")
+        return web.json_response({'error': str(e)}, status=500)
 
 async def user_management(request):
     admin_id = await check_auth(request)
@@ -400,7 +456,9 @@ async def activity_logs(request):
 async def check_subscription(user_id):
     try:
         chat_member = await bot.get_chat_member(chat_id=CHANNEL_ID, user_id=user_id)
-        return chat_member.status in ['member', 'administrator', 'creator']
+        status = chat_member.status in ['member', 'administrator', 'creator']
+        logger.debug(f"Проверка подписки user_id {user_id}: {'Подписан' if status else 'Не подписан'}")
+        return status
     except Exception as e:
         logger.error(f"Ошибка проверки подписки для {user_id}: {e}")
         return False
@@ -413,6 +471,7 @@ async def cmd_start(message: Message):
         username = message.from_user.username
         first_name = message.from_user.first_name
         last_name = message.from_user.last_name
+        logger.debug(f"Команда /start от user_id {user_id}")
         
         conn = sqlite3.connect('database.db')
         c = conn.cursor()
@@ -468,16 +527,47 @@ async def check_subscription_callback(callback_query):
         logger.error(f"Ошибка проверки подписки: {e}")
         await callback_query.message.edit_text("Произошла ошибка. Попробуйте позже.")
 
-# Настройка вебхука
+# Обработчик команды /restart
+@dp.message(Command('restart'))
+async def cmd_restart(message: Message):
+    try:
+        if str(message.from_user.id) != '5033892308':
+            await message.answer("У вас нет прав для выполнения этой команды.")
+            return
+        logger.info("Команда /restart выполняется")
+        if await set_webhook():
+            await message.answer("Вебхук перезапущен успешно!")
+        else:
+            await message.answer("Ошибка при перезапуске вебхука. Проверьте логи.")
+    except Exception as e:
+        logger.error(f"Ошибка обработки команды /restart: {e}")
+        await message.answer("Произошла ошибка. Попробуйте позже.")
+
+# Настройка вебхука с retry
+async def set_webhook():
+    max_attempts = 5
+    for attempt in range(max_attempts):
+        try:
+            webhook = await bot.get_webhook_info()
+            if webhook.url != WEBHOOK_URL:
+                await bot.delete_webhook()
+                await asyncio.sleep(1)
+                await bot.set_webhook(url=WEBHOOK_URL)
+                logger.info(f"Вебхук установлен на {WEBHOOK_URL}")
+            else:
+                logger.info("Вебхук уже установлен")
+            return True
+        except Exception as e:
+            logger.error(f"Попытка {attempt+1}/{max_attempts} установки вебхука не удалась: {e}")
+            await asyncio.sleep(2)
+    logger.error("Не удалось установить вебхук после всех попыток")
+    return False
+
+# Настройка вебхука при запуске
 async def on_startup(app):
     try:
         logger.info("Установка вебхука...")
-        webhook = await bot.get_webhook_info()
-        if webhook.url != WEBHOOK_URL:
-            await bot.set_webhook(url=WEBHOOK_URL)
-            logger.info(f"Вебхук установлен на {WEBHOOK_URL}")
-        else:
-            logger.info("Вебхук уже установлен")
+        await set_webhook()
         init_db()
     except Exception as e:
         logger.error(f"Ошибка при запуске приложения: {e}")
@@ -500,6 +590,7 @@ routes = [
     web.route('*', '/admin/{admin_id}/broadcast', broadcast),
     web.route('*', '/admin/{admin_id}/private_message', private_message),
     web.route('*', '/admin/{admin_id}/user_stats', user_stats),
+    web.get('/admin/{admin_id}/stats_json', stats_json),
     web.route('*', '/admin/{admin_id}/user_management', user_management),
     web.route('*', '/admin/{admin_id}/activity_logs', activity_logs)
 ]
